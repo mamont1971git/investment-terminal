@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Investment Terminal — Daniel</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body{margin:0;background:#07090f;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif}
+    *{box-sizing:border-box}
+    input,select,textarea{background:#0d1120;color:#e2e8f0;border:1px solid #1e2d4a;outline:none;border-radius:10px}
+    input:focus,select:focus{border-color:#3b82f6}
+    ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#07090f}::-webkit-scrollbar-thumb{background:#1e2d4a;border-radius:2px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+    .spin{animation:spin 1s linear infinite}
+    .fade{animation:fadeIn 0.35s ease forwards}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useMemo,useCallback}=React;
+
+// ─── helpers ──────────────────────────────────────────────────────────────
+const fmt=(n,d=2)=>n==null?'—':Number(n).toFixed(d);
+const load=(k,fb)=>{try{return JSON.parse(localStorage.getItem(k))??fb}catch{return fb}};
+const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
+
+// ─── error logging ────────────────────────────────────────────────────────
+function logError(type,message,context={}){
+  const entry={
+    id:Date.now(),
+    ts:new Date().toISOString(),
+    type,
+    message:String(message),
+    context,
+    userAgent:navigator.userAgent.slice(0,80),
+    protocol:window.location.protocol,
+  };
+  const existing=load('inv_errors',[]);
+  const updated=[entry,...existing].slice(0,100); // keep last 100 errors
+  save('inv_errors',updated);
+  console.error('[InvTerminal]',type,message,context);
+  return entry;
+}
+
+// ─── error banner component ───────────────────────────────────────────────
+function ErrorBanner({errors,onDismiss}){
+  if(!errors||!errors.length)return null;
+  const latest=errors[0];
+  const isNetwork=latest.protocol==='file:'&&latest.type.startsWith('FETCH');
+  return(
+    <div className="sticky top-0 z-50 w-full"style={{background:'#7f1d1d',borderBottom:'2px solid #ef4444'}}>
+      <div className="max-w-2xl mx-auto px-4 py-2 flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0">
+          <span className="text-red-300 text-sm flex-shrink-0 mt-0.5">⚠</span>
+          <div className="min-w-0">
+            <span className="text-sm font-bold text-red-200">{latest.type}: </span>
+            <span className="text-sm text-red-200">{latest.message}</span>
+            {isNetwork&&(
+              <div className="text-xs text-red-400 mt-0.5">
+                Running as local file — live data fetch blocked by browser security.
+                Enter values manually below, or{' '}
+                <a href="https://vercel.com" target="_blank" className="underline text-red-300">host on Vercel</a>
+                {' '}for auto-fetch.
+              </div>
+            )}
+            <div className="text-xs text-red-500 mt-0.5">
+              {new Date(latest.ts).toLocaleTimeString()} · {errors.length} error{errors.length>1?'s':''} logged
+              {' '}· <button onClick={()=>{save('inv_errors',[]);onDismiss();}}
+                className="underline text-red-400">Clear all</button>
+            </div>
+          </div>
+        </div>
+        <button onClick={onDismiss} className="text-red-400 hover:text-red-200 text-lg flex-shrink-0">✕</button>
+      </div>
+    </div>
+  );
+}
+const todayStr=()=>new Date().toISOString().split('T')[0];
+
+const DEMO_TRADES=[
+  {id:1,ticker:'NVDA',strategy:'Mean Reversion',status:'Closed',dateOpened:'2026-03-15',dateClosed:'2026-03-21',entryPrice:134.50,exitPrice:147.82,stopLoss:125.09,score:82,pnlPct:10.05,rulesFollowed:true,
+   right:'RSI(2) at 4.8 — deeply oversold. Above 200 EMA. F&G at 31 (Fear). No earnings for 18 days.',lesson:'Deep RSI(2) oversold on strong fundamentals = highest conviction MR setup.'},
+  {id:2,ticker:'AMZN',strategy:'Breakout Momentum',status:'Closed',dateOpened:'2026-03-28',dateClosed:'2026-04-03',entryPrice:207.50,exitPrice:193.98,stopLoss:192.98,score:68,pnlPct:-6.51,rulesFollowed:true,
+   right:'Volume surge confirmed. Sector aligned.',lesson:'Market regime shifted to caution mid-trade on tariff news. Always check macro calendar before entry.'},
+  {id:3,ticker:'AAPL',strategy:'Mean Reversion',status:'Closed',dateOpened:'2026-04-06',dateClosed:'2026-04-10',entryPrice:172.80,exitPrice:185.82,stopLoss:160.70,score:76,pnlPct:7.53,rulesFollowed:true,
+   right:'RSI(2) at 6.2. Earnings 14 days out (safe). F&G at 27 (Fear zone).',lesson:'Sold at TP1. Should have held to TP2 — the thesis was intact.'},
+  {id:4,ticker:'META',strategy:'Breakout Momentum',status:'Closed',dateOpened:'2026-04-02',dateClosed:'2026-04-09',entryPrice:594.20,exitPrice:638.78,stopLoss:552.61,score:79,pnlPct:7.50,rulesFollowed:true,
+   right:'Volume 2.1× average. Broke $590 resistance with tech sector tailwind.',lesson:'Patience on breakouts pays. Volume confirmation was the key signal.'},
+  {id:5,ticker:'MSFT',strategy:'Mean Reversion',status:'Open',dateOpened:'2026-04-12',dateClosed:'',entryPrice:385.40,exitPrice:null,stopLoss:358.42,score:74,pnlPct:null,rulesFollowed:true,
+   right:'RSI(2) at 8.1. Strong EMA alignment. No earnings for 18 days. F&G was 29 at entry.',lesson:''},
+];
+
+// ─── live data with timeout ─────────────────────────────────────────────
+const fetchWithTimeout=(promise,ms=6000)=>
+  Promise.race([promise,new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),ms))]);
+
+const PROXY='https://corsproxy.io/?';
+
+async function fetchVIX(){
+  try{
+    const url=PROXY+encodeURIComponent('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=2d');
+    const r=await fetchWithTimeout(fetch(url));
+    const d=await r.json();
+    const res=d?.chart?.result?.[0];
+    if(!res){logError('FETCH_VIX','No data in response',{url});return null;}
+    const v=res.meta.regularMarketPrice,p=res.meta.previousClose||v;
+    return{value:v,change:v-p,pct:((v-p)/p*100)};
+  }catch(e){
+    logError('FETCH_VIX',e.message||'Network error',{protocol:window.location.protocol});
+    return null;
+  }
+}
+async function fetchSPY(){
+  try{
+    const url=PROXY+encodeURIComponent('https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=120d');
+    const r=await fetchWithTimeout(fetch(url));
+    const d=await r.json();
+    const res=d?.chart?.result?.[0];
+    if(!res){logError('FETCH_SPY','No data in response',{url});return null;}
+    const closes=res.indicators.quote[0].close.filter(Boolean);
+    const price=closes[closes.length-1],prev=closes[closes.length-2];
+    const k=2/51;let ema=closes.slice(0,50).reduce((a,b)=>a+b,0)/50;
+    for(let i=50;i<closes.length;i++)ema=closes[i]*k+ema*(1-k);
+    return{price,change:price-prev,pct:((price-prev)/prev*100),ema50:ema,above:price>ema,pctAbove:(price-ema)/ema*100};
+  }catch(e){
+    logError('FETCH_SPY',e.message||'Network error',{protocol:window.location.protocol});
+    return null;
+  }
+}
+async function fetchFG(){
+  try{
+    const url=PROXY+encodeURIComponent('https://production.dataviz.cnn.io/index/fearandgreed/graphdata');
+    const r=await fetchWithTimeout(fetch(url));
+    const d=await r.json();const fg=d?.fear_and_greed;
+    if(!fg){logError('FETCH_FG','No fear_and_greed in response',{url});return null;}
+    return{value:Math.round(Number(fg.score)),label:fg.rating?.replace(/_/g,' ')};
+  }catch(e){
+    logError('FETCH_FG',e.message||'Network error',{protocol:window.location.protocol});
+    return null;
+  }
+}
+
+// ─── regime logic ─────────────────────────────────────────────────────────
+function getRegime(vix,fg,spyAbove){
+  if(vix>30||fg>80)return{
+    name:'CAUTION ZONE',color:'#ef4444',icon:'⚠️',
+    headline:'Stay mostly in cash. Protect what you have.',
+    why:`VIX at ${fmt(vix)} signals elevated fear${fg>80?' and F&G above 80 means extreme greed — a dangerous combo':''}.`,
+    action:'Reduce all positions to 50% exposure. Only enter if composite score ≥ 75. No new breakout trades.',
+  };
+  if(fg<20)return{
+    name:'EXTREME FEAR',color:'#f97316',icon:'😱',
+    headline:'Potential mean reversion bounce — tiny positions only.',
+    why:`F&G at ${fg} is extreme fear territory. Historically this is where oversold bounces start, but it can get worse before it gets better.`,
+    action:'1–2% position sizes maximum. Only RSI(2) < 5 setups on the strongest fundamentals.',
+  };
+  if(vix<18&&fg>55&&spyAbove)return{
+    name:'BREAKOUT ZONE',color:'#22c55e',icon:'🚀',
+    headline:'Trending market — chase volume-confirmed breakouts.',
+    why:`VIX at ${fmt(vix)} (low fear), F&G at ${fg} (greed building), SPY above its 50-day trend line. This is a bull mode.`,
+    action:'Deploy Strategy B. Buy breakouts above resistance on 1.5× average volume. 2–3% position size.',
+  };
+  return{
+    name:'MEAN REVERSION ZONE',color:'#6366f1',icon:'🔄',
+    headline:'Range-bound market — buy quality stocks that have pulled back.',
+    why:`VIX at ${fmt(vix)} (moderate fear) and F&G at ${fg} — neither panicking nor euphoric. This is the ideal condition to buy oversold dips on strong stocks.`,
+    action:'Deploy Strategy A. Look for RSI(2) < 10 on stocks above their 200-day EMA. 2–4% position size.',
+  };
+}
+
+// ─── small components ────────────────────────────────────────────────────
+function Spin(){
+  return<div className="w-4 h-4 rounded-full border-2 spin flex-shrink-0"
+    style={{borderColor:'#3b82f6',borderTopColor:'transparent'}}/>;
+}
+function Pill({text,color}){
+  return<span className="inline-block px-2 py-0.5 rounded-full text-xs font-bold"
+    style={{background:color+'20',color,border:`1px solid ${color}44`}}>{text}</span>;
+}
+function Card({children,style={},className=''}){
+  return<div className={`rounded-2xl ${className}`}
+    style={{background:'#0d1120',border:'1px solid #1e2d4a',...style}}>{children}</div>;
+}
+
+// ─── POSITION CARD (expandable) ──────────────────────────────────────────
+function PositionCard({t,regime,live}){
+  const [open,setOpen]=useState(false);
+  const tp1=t.entryPrice*1.08,tp2=t.entryPrice*1.15,tp3=t.entryPrice*1.22;
+
+  // derive recommendation
+  const inCaution=regime?.name.includes('CAUTION');
+  const thesisMismatch=regime&&(
+    (t.strategy==='Breakout Momentum'&&!regime.name.includes('BREAKOUT')&&!regime.name.includes('CAUTION')===false)||
+    (t.strategy==='Mean Reversion'&&regime.name.includes('BREAKOUT'))
+  );
+  const rec=inCaution
+    ?{text:'⚠️ TIGHTEN STOP',color:'#ef4444'}
+    :{text:'✅ HOLD',color:'#22c55e'};
+
+  // plain-English reasoning
+  const reasoning=inCaution
+    ?`Market shifted to Caution Zone. Move your stop from $${t.stopLoss} to approximately $${fmt(t.entryPrice*0.97)} (–3%) to protect capital. Do not add to this position.`
+    :`The ${t.strategy} thesis that justified this entry is still intact. The current ${regime?.name||'regime'} supports holding. Watch for price to hit TP1 at $${fmt(tp1)} — at that point sell 33% and move stop to breakeven ($${t.entryPrice}).`;
+
+  const liveSignalStatus=()=>{
+    if(!live?.vix||!live?.fg)return null;
+    const checks=[];
+    if(t.strategy==='Mean Reversion'){
+      checks.push({l:'VIX (want 15–30)',ok:live.vix.value>=15&&live.vix.value<=30,v:fmt(live.vix.value)});
+      checks.push({l:'F&G (want < 65)',ok:live.fg.value<65,v:`${live.fg.value} (${live.fg.label})`});
+    } else {
+      checks.push({l:'VIX (want < 20)',ok:live.vix.value<20,v:fmt(live.vix.value)});
+      checks.push({l:'F&G (want > 50)',ok:live.fg.value>50,v:`${live.fg.value} (${live.fg.label})`});
+    }
+    checks.push({l:'SPY above 50 EMA',ok:live.spy?.above,v:live.spy?(live.spy.above?`Yes (+${fmt(live.spy.pctAbove)}%)`:'No'):'—'});
+    return checks;
+  };
+  const checks=liveSignalStatus();
+
+  return(
+    <div style={{borderTop:'1px solid #0f1828',background:'#0a0e1a'}}>
+      {/* — collapsed row — */}
+      <div className="px-4 py-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-black text-lg text-white">{t.ticker}</span>
+            <span className="text-xs text-gray-500">{t.strategy}</span>
+            <Pill text={rec.text} color={rec.color}/>
+          </div>
+          <button onClick={()=>setOpen(x=>!x)}
+            className="text-xs px-2.5 py-1 rounded-lg flex-shrink-0 ml-2"
+            style={{background:'#1e2d4a',color:'#94a3b8'}}>
+            {open?'▲ Less':'▼ Why?'}
+          </button>
+        </div>
+        <div className="grid grid-cols-3 gap-2 mt-2">
+          {[
+            {l:'Entry',v:`$${t.entryPrice}`,bg:'#0f1828',c:'#e2e8f0'},
+            {l:'Stop –7%',v:`$${t.stopLoss}`,bg:'#1a0c0c',c:'#f87171'},
+            {l:'TP1 +8%',v:`$${fmt(tp1)}`,bg:'#0a1a0d',c:'#4ade80'},
+          ].map((b,i)=>(
+            <div key={i} className="rounded-xl p-2 text-xs" style={{background:b.bg}}>
+              <div className="text-gray-500">{b.l}</div>
+              <div className="font-bold mt-0.5"style={{color:b.c}}>{b.v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* — expanded analysis — */}
+      {open&&(
+        <div className="px-4 pb-4 space-y-3 fade">
+
+          {/* recommendation with reasoning */}
+          <div className="rounded-xl p-3"style={{background:`${rec.color}10`,border:`1px solid ${rec.color}30`}}>
+            <div className="text-xs font-bold mb-1.5"style={{color:rec.color}}>
+              {rec.text} — Here's why
+            </div>
+            <div className="text-xs text-gray-300 leading-relaxed">{reasoning}</div>
+          </div>
+
+          {/* why this trade was entered */}
+          <div className="rounded-xl p-3"style={{background:'#0f1828'}}>
+            <div className="text-xs font-bold text-gray-400 mb-2">Why This Trade Was Opened</div>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Strategy used</span>
+                <span className="text-gray-200 font-semibold">{t.strategy}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Composite score at entry</span>
+                <span className="font-bold"
+                  style={{color:t.score>=80?'#22c55e':t.score>=65?'#84cc16':'#f59e0b'}}>
+                  {t.score}/100 — {t.score>=80?'Strong Conviction':t.score>=65?'Standard Entry':'Watchlist'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Entry date</span>
+                <span className="text-gray-200">{t.dateOpened}</span>
+              </div>
+              {t.right&&(
+                <div className="pt-2 border-t"style={{borderColor:'#1e2d4a'}}>
+                  <div className="text-gray-500 mb-1">Signals that triggered entry</div>
+                  <div className="text-gray-300 leading-relaxed">{t.right}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* live signal check */}
+          {checks&&(
+            <div className="rounded-xl p-3"style={{background:'#0f1828'}}>
+              <div className="text-xs font-bold text-gray-400 mb-2">Live Signal Check — Is Thesis Still Valid?</div>
+              <div className="space-y-2">
+                {checks.map((c,i)=>(
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500">{c.l}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-200">{c.v}</span>
+                      <span style={{color:c.ok?'#22c55e':'#f59e0b'}}>{c.ok?'✓':'⚠'}</span>
+                    </div>
+                  </div>
+                ))}
+                <div className="pt-2 border-t text-xs"style={{borderColor:'#1e2d4a'}}>
+                  <span className="text-gray-500">Overall: </span>
+                  <span style={{color:checks.every(c=>c.ok)?'#22c55e':'#f59e0b'}} className="font-bold">
+                    {checks.every(c=>c.ok)
+                      ?'All signals green — thesis intact'
+                      :'Some signals weakening — watch closely, consider tightening stop'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* full price ladder */}
+          <div className="rounded-xl p-3"style={{background:'#0f1828'}}>
+            <div className="text-xs font-bold text-gray-400 mb-2">Price Ladder — What To Do At Each Level</div>
+            <div className="space-y-2 text-xs">
+              {[
+                {l:'Stop –7%',v:`$${t.stopLoss}`,c:'#ef4444',note:'EXIT IMMEDIATELY. No exceptions, no waiting for recovery.'},
+                {l:'Entry',v:`$${t.entryPrice}`,c:'#94a3b8',note:'Your cost basis.'},
+                {l:'TP1 +8%',v:`$${fmt(tp1)}`,c:'#22c55e',note:'Sell 33% of your position. Move stop to breakeven.'},
+                {l:'TP2 +15%',v:`$${fmt(tp2)}`,c:'#22c55e',note:'Sell another 33%. Trail remaining with a 50% peak-gain stop.'},
+                {l:'TP3 +22%',v:`$${fmt(tp3)}`,c:'#22c55e',note:'Trail final 34% with a tight (3× ATR) stop. Let it run.'},
+              ].map((row,i)=>(
+                <div key={i} className="flex items-start justify-between gap-3 py-1.5"
+                  style={{borderBottom:i<4?'1px solid #1a2540':'none'}}>
+                  <div>
+                    <div className="font-semibold"style={{color:row.c}}>{row.l} — {row.v}</div>
+                    <div className="text-gray-500 mt-0.5">{row.note}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── DAILY BRIEF (main view) ──────────────────────────────────────────────
+function DailyBrief(){
+  const [live,setLive]=useState(null);
+  const [status,setStatus]=useState('idle'); // idle | loading | done | failed
+  const [ts,setTs]=useState(null);
+  const [bannerErrors,setBannerErrors]=useState(()=>load('inv_errors',[]));
+  const [manualVix,setManualVix]=useState('');
+  const [manualFg,setManualFg]=useState('');
+  const [spyTrend,setSpyTrend]=useState('above');
+  const trades=load('inv_trades',DEMO_TRADES);
+  const openTrades=trades.filter(t=>t.status==='Open');
+
+  const refresh=useCallback(async()=>{
+    setStatus('loading');setLive(null);
+    try{
+      const [vix,spy,fg]=await Promise.all([fetchVIX(),fetchSPY(),fetchFG()]);
+      const freshErrors=load('inv_errors',[]);
+      setBannerErrors(freshErrors);
+      if(!vix&&!spy&&!fg){setStatus('failed');}
+      else{setLive({vix,spy,fg});setStatus('done');setTs(new Date());}
+    }catch(e){
+      logError('FETCH_ALL',e.message||'Unexpected error during refresh');
+      setBannerErrors(load('inv_errors',[]));
+      setStatus('failed');
+    }
+  },[]);
+
+  useEffect(()=>{refresh();},[]);
+
+  // regime: prefer live data, fall back to manual entry
+  const vixVal=live?.vix?.value||Number(manualVix)||null;
+  const fgVal=live?.fg?.value||Number(manualFg)||null;
+  const spyAbove=live?.spy?(live.spy.above):(spyTrend==='above');
+  const regime=vixVal&&fgVal?getRegime(vixVal,fgVal,spyAbove):null;
+
+  const mktStatus=()=>{
+    const et=new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+    const m=et.getHours()*60+et.getMinutes(),d=et.getDay();
+    if(d===0||d===6)return{l:'Weekend',c:'#475569'};
+    if(m<9*60+30)return{l:'Pre-Market',c:'#f59e0b'};
+    if(m<16*60)return{l:'Open',c:'#22c55e'};
+    if(m<20*60)return{l:'After Hours',c:'#94a3b8'};
+    return{l:'Closed',c:'#475569'};
+  };
+  const ms=mktStatus();
+
+  const closed=trades.filter(t=>t.pnlPct!=null&&t.status!=='Open');
+  const wins=closed.filter(t=>t.pnlPct>0);
+
+  return(
+    <div className="min-h-screen"style={{background:'#07090f'}}>
+
+      {/* error banner — always on top */}
+      <ErrorBanner
+        errors={bannerErrors}
+        onDismiss={()=>setBannerErrors([])}
+      />
+
+      {/* header */}
+      <div className="sticky top-0 z-20 px-4 pt-4 pb-3"
+        style={{background:'#07090f',borderBottom:'1px solid #0d1120'}}>
+        <div className="max-w-2xl mx-auto flex items-center justify-between">
+          <div>
+            <span className="font-black text-white tracking-tight">📈 Investment Terminal</span>
+            <span className="text-xs text-gray-700 ml-2">Daniel</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold"style={{color:ms.c}}>● {ms.l}</span>
+            <button onClick={refresh} disabled={status==='loading'}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl"
+              style={{background:'#0f1828',color:'#60a5fa',border:'1px solid #1e2d4a'}}>
+              {status==='loading'?<><Spin/>Fetching…</>:'↻ Refresh'}
+            </button>
+          </div>
+        </div>
+        {/* 2 tabs only */}
+        <div className="max-w-2xl mx-auto flex gap-2 mt-3">
+          {window._tab==='journal'?
+            <button onClick={()=>{window._tab='brief';window.location.reload()}}
+              className="text-xs px-3 py-1.5 rounded-xl"
+              style={{background:'#0f1828',color:'#6b7280',border:'1px solid #1e2d4a'}}>← Daily Brief</button>
+            :null}
+        </div>
+      </div>
+
+      <div className="px-4 py-4 max-w-2xl mx-auto space-y-4 pb-20">
+
+        {/* ── regime banner ── */}
+        {status==='loading'&&!regime&&(
+          <Card className="p-5 flex items-center gap-3">
+            <Spin/><span className="text-sm text-gray-400">Fetching live market data…</span>
+          </Card>
+        )}
+
+        {status==='failed'&&!regime&&(
+          <Card className="p-4"style={{border:'1px solid #f59e0b22'}}>
+            <div className="text-xs font-bold text-amber-400 mb-2">⚡ Live data unavailable — enter manually</div>
+            <p className="text-xs text-gray-500 mb-3">The app needs to be hosted online for auto-fetch. Enter today's readings to get your analysis.</p>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">VIX</label>
+                <input type="number" placeholder="e.g. 18.4" value={manualVix}
+                  onChange={e=>setManualVix(e.target.value)} className="w-full px-2 py-1.5 text-sm"/>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">Fear & Greed</label>
+                <input type="number" placeholder="e.g. 49" value={manualFg}
+                  onChange={e=>setManualFg(e.target.value)} className="w-full px-2 py-1.5 text-sm"/>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">SPY vs 50 EMA</label>
+                <select value={spyTrend} onChange={e=>setSpyTrend(e.target.value)}
+                  className="w-full px-2 py-1.5 text-sm">
+                  <option value="above">Above</option>
+                  <option value="below">Below</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-gray-600">
+              Check: <a href="https://finance.yahoo.com/quote/%5EVIX" target="_blank" className="text-blue-500">VIX ↗</a>
+              {' · '}<a href="https://cnn.com/markets/fear-and-greed" target="_blank" className="text-blue-500">Fear & Greed ↗</a>
+            </div>
+          </Card>
+        )}
+
+        {regime&&(
+          <Card className="p-5 fade"style={{border:`2px solid ${regime.color}44`,background:`linear-gradient(135deg,${regime.color}0a,#0d1120)`}}>
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <div className="text-xl font-black mb-1"style={{color:regime.color}}>
+                  {regime.icon} {regime.name}
+                </div>
+                <div className="text-base font-semibold text-gray-200">{regime.headline}</div>
+              </div>
+              {ts&&<div className="text-xs text-gray-700 flex-shrink-0">{ts.toLocaleTimeString()}</div>}
+            </div>
+
+            {/* plain-English reasoning */}
+            <div className="rounded-xl p-3 mb-3"style={{background:'#07090f88'}}>
+              <div className="text-xs font-bold text-gray-500 mb-1">WHY</div>
+              <div className="text-sm text-gray-300 leading-relaxed">{regime.why}</div>
+            </div>
+
+            {/* what to do */}
+            <div className="rounded-xl p-3 mb-3"style={{background:`${regime.color}12`}}>
+              <div className="text-xs font-bold mb-1"style={{color:regime.color}}>WHAT TO DO</div>
+              <div className="text-sm text-gray-200 leading-relaxed">{regime.action}</div>
+            </div>
+
+            {/* 3 numbers */}
+            <div className="flex gap-3 flex-wrap">
+              {[
+                {l:'VIX',v:live?.vix?fmt(live.vix.value):manualVix||'—',
+                 sub:live?.vix?(live.vix.change>0?`▲ ${fmt(live.vix.pct)}%`:`▼ ${fmt(Math.abs(live.vix.pct))}%`):'manual entry',
+                 c:live?.vix?(live.vix.value<18?'#22c55e':live.vix.value<25?'#6366f1':live.vix.value<30?'#f59e0b':'#ef4444'):'#94a3b8'},
+                {l:'Fear & Greed',v:live?.fg?live.fg.value:manualFg||'—',
+                 sub:live?.fg?live.fg.label:'manual entry',
+                 c:live?.fg?(live.fg.value<30?'#ef4444':live.fg.value<45?'#f97316':live.fg.value<55?'#f59e0b':live.fg.value<70?'#22c55e':'#84cc16'):'#94a3b8'},
+                {l:'SPY vs 50 EMA',v:live?.spy?`$${fmt(live.spy.price,0)}`:spyAbove?'Above':'Below',
+                 sub:live?.spy?(live.spy.above?`+${fmt(live.spy.pctAbove)}% above`:` ${fmt(live.spy.pctAbove)}% below`):(spyAbove?'manual entry':'manual entry'),
+                 c:live?.spy?(live.spy.above?'#22c55e':'#ef4444'):(spyAbove?'#22c55e':'#ef4444')},
+              ].map((s,i)=>(
+                <div key={i} className="flex-1 min-w-0">
+                  <div className="text-xs text-gray-500">{s.l}</div>
+                  <div className="font-black text-xl"style={{color:s.c}}>{s.v}</div>
+                  <div className="text-xs"style={{color:s.c+'bb'}}>{s.sub}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {/* ── open positions ── */}
+        {openTrades.length>0&&(
+          <Card>
+            <div className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-gray-500"
+              style={{borderBottom:'1px solid #0f1828'}}>
+              Open Positions — tap "Why?" to see full analysis
+            </div>
+            {openTrades.map(t=>(
+              <PositionCard key={t.id} t={t} regime={regime} live={live}/>
+            ))}
+          </Card>
+        )}
+
+        {/* ── portfolio summary ── */}
+        <Card className="p-4">
+          <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">Portfolio</div>
+          <div className="grid grid-cols-4 gap-3 text-center">
+            {(()=>{
+              const winRate=closed.length?Math.round(wins.length/closed.length*100):0;
+              const totalPnl=closed.reduce((s,t)=>s+t.pnlPct,0);
+              return[
+                {l:'Win Rate',v:`${winRate}%`,c:winRate>=55?'#22c55e':winRate>=45?'#f59e0b':'#ef4444'},
+                {l:'Total P&L',v:`${totalPnl>=0?'+':''}${totalPnl.toFixed(1)}%`,c:totalPnl>=0?'#22c55e':'#ef4444'},
+                {l:'Open',v:openTrades.length,c:'#60a5fa'},
+                {l:'Trades',v:closed.length,c:'#94a3b8'},
+              ];
+            })().map((s,i)=>(
+              <div key={i}>
+                <div className="text-xs text-gray-600 mb-1">{s.l}</div>
+                <div className="font-black text-base"style={{color:s.c}}>{s.v}</div>
+              </div>
+            ))}
+          </div>
+          <button onClick={()=>{window._tab='journal';window._openJournal&&window._openJournal();}}
+            className="w-full mt-3 py-2 rounded-xl text-xs font-semibold text-indigo-400"
+            style={{background:'#0f1828',border:'1px solid #1e2d4a'}}>
+            View full journal & P&L chart →
+          </button>
+        </Card>
+
+        {/* ── what to do next ── */}
+        <Card>
+          <div className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-gray-500"
+            style={{borderBottom:'1px solid #0f1828'}}>
+            Next Actions
+          </div>
+          {[
+            {icon:'🤖',title:'Get full AI recommendations',desc:'Say "run investment analysis" to Claude — it fetches all signals and gives specific BUY/SELL/HOLD/TAKE PROFIT calls',color:'#6366f1'},
+            {icon:'🔍',title:'Find today\'s candidates',desc:'Open Finviz MR Screener (RSI<10 stocks above 200 EMA) — paste tickers to Claude for scoring',color:'#3b82f6',url:'https://finviz.com/screener.ashx?v=111&f=rsi_os10,ma200_pa,cap_midover&o=-rsi'},
+            {icon:'📓',title:'Log a trade',desc:'Record paper trades in the journal to start building your track record',color:'#22c55e'},
+          ].map((a,i)=>(
+            <div key={i} className="flex items-start gap-3 px-4 py-3"
+              style={{borderTop:'1px solid #0f1828',background:'#0a0e1a'}}>
+              <span className="text-xl mt-0.5">{a.icon}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold mb-0.5"style={{color:a.color}}>{a.title}</div>
+                <div className="text-xs text-gray-500 leading-relaxed">{a.desc}</div>
+                {a.url&&<a href={a.url} target="_blank" rel="noreferrer"
+                  className="text-xs text-blue-500 mt-1 inline-block">Open Finviz ↗</a>}
+              </div>
+            </div>
+          ))}
+        </Card>
+
+        {/* ── phase tracker ── */}
+        <Card className="p-4">
+          <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">Where You Are</div>
+          <div className="space-y-2">
+            {[
+              {n:0,l:'Setup & config',done:true,d:'Databases, dashboard, skill, agents ✅'},
+              {n:1,l:'Paper trading — 4 weeks',active:true,d:'Target: 20+ trades · Win rate >50% · All rules followed · 0 real money'},
+              {n:2,l:'Small capital (10%)',d:'After Phase 1 passes. Max 1% position size.'},
+              {n:3,l:'Growing capital (40%)',d:'After Phase 2. Standard sizing.'},
+              {n:4,l:'Full deployment',d:'Full capital. All systems live.'},
+            ].map((p,i)=>(
+              <div key={i} className="flex items-start gap-3">
+                <div className="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5"
+                  style={{background:p.done?'#22c55e':p.active?'#6366f1':'#1e2d4a',
+                    color:p.done||p.active?'#fff':'#475569'}}>
+                  {p.done?'✓':p.n}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-semibold"style={{color:p.done?'#22c55e':p.active?'#a5b4fc':'#4b5563'}}>
+                      Phase {p.n}: {p.l}
+                    </span>
+                    {p.active&&<Pill text="YOU ARE HERE" color="#6366f1"/>}
+                  </div>
+                  <div className="text-xs text-gray-600 mt-0.5">{p.d}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+      </div>
+    </div>
+  );
+}
+
+// ─── JOURNAL (second view) ───────────────────────────────────────────────
+function Journal({onBack}){
+  const [trades,setTrades]=useState(()=>{
+    const s=load('inv_trades',null);
+    if(!s){save('inv_trades',DEMO_TRADES);return DEMO_TRADES;}return s;
+  });
+  const [showForm,setShowForm]=useState(false);
+  const [form,setForm]=useState({ticker:'',strategy:'Mean Reversion',status:'Paper',
+    dateOpened:todayStr(),dateClosed:'',score:'',entryPrice:'',stopLoss:'',exitPrice:'',
+    rulesFollowed:true,right:'',lesson:''});
+  const canvasRef=useRef(null);const chartRef=useRef(null);
+
+  const closed=trades.filter(t=>t.pnlPct!=null&&t.status!=='Open');
+  const wins=closed.filter(t=>t.pnlPct>0);
+  const losses=closed.filter(t=>t.pnlPct<=0);
+  const stats={
+    winRate:closed.length?Math.round(wins.length/closed.length*100):0,
+    avgWin:wins.length?(wins.reduce((s,t)=>s+t.pnlPct,0)/wins.length).toFixed(1):0,
+    avgLoss:losses.length?(losses.reduce((s,t)=>s+t.pnlPct,0)/losses.length).toFixed(1):0,
+    total:closed.reduce((s,t)=>s+t.pnlPct,0).toFixed(1),
+    compliance:trades.length?Math.round(trades.filter(t=>t.rulesFollowed).length/trades.length*100):100,
+  };
+
+  useEffect(()=>{
+    const sorted=[...closed].sort((a,b)=>new Date(a.dateOpened)-new Date(b.dateOpened));
+    if(!canvasRef.current||!sorted.length)return;
+    if(chartRef.current){chartRef.current.destroy();}
+    let cum=0;const cums=sorted.map(t=>{cum+=t.pnlPct;return parseFloat(cum.toFixed(2));});
+    chartRef.current=new Chart(canvasRef.current,{
+      type:'bar',
+      data:{labels:sorted.map(t=>t.ticker),datasets:[
+        {type:'line',label:'Cumulative %',data:cums,borderColor:'#6366f1',borderWidth:2,
+         pointRadius:4,pointBackgroundColor:'#6366f1',fill:true,
+         backgroundColor:'rgba(99,102,241,0.07)',tension:0.3,yAxisID:'y2'},
+        {type:'bar',label:'Trade %',data:sorted.map(t=>parseFloat(t.pnlPct.toFixed(2))),
+         backgroundColor:sorted.map(t=>t.pnlPct>0?'rgba(34,197,94,0.6)':'rgba(239,68,68,0.6)'),
+         yAxisID:'y1'},
+      ]},
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          x:{ticks:{color:'#475569',font:{size:9}},grid:{color:'#0f1828'}},
+          y1:{type:'linear',position:'left',ticks:{color:'#94a3b8',font:{size:9},callback:v=>`${v>0?'+':''}${v}%`},grid:{color:'#0f1828'}},
+          y2:{type:'linear',position:'right',ticks:{color:'#6366f1',font:{size:9},callback:v=>`${v>0?'+':''}${v}%`},grid:{drawOnChartArea:false}},
+        },
+      },
+    });
+    return()=>{if(chartRef.current)chartRef.current.destroy();};
+  },[trades]);
+
+  const setF=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const saveTrade=()=>{
+    if(!form.ticker.trim())return;
+    const pnlPct=form.exitPrice&&form.entryPrice
+      ?((Number(form.exitPrice)-Number(form.entryPrice))/Number(form.entryPrice)*100):null;
+    const t={...form,id:Date.now(),ticker:form.ticker.toUpperCase(),pnlPct};
+    const u=[t,...trades];setTrades(u);save('inv_trades',u);setShowForm(false);
+  };
+  const del=id=>{if(!confirm('Delete?'))return;const u=trades.filter(t=>t.id!==id);setTrades(u);save('inv_trades',u);};
+
+  return(
+    <div className="min-h-screen"style={{background:'#07090f'}}>
+      <div className="sticky top-0 z-20 px-4 pt-4 pb-3"style={{background:'#07090f',borderBottom:'1px solid #0d1120'}}>
+        <div className="max-w-2xl mx-auto flex items-center justify-between">
+          <button onClick={onBack} className="flex items-center gap-1.5 text-sm font-semibold text-indigo-400">
+            ← Daily Brief
+          </button>
+          <span className="font-black text-white">Trade Journal</span>
+          <div className="w-20"/>
+        </div>
+      </div>
+
+      <div className="px-4 py-4 max-w-2xl mx-auto space-y-4 pb-20">
+
+        {/* stats */}
+        <div className="grid grid-cols-5 gap-2">
+          {[
+            {l:'Win Rate',v:`${stats.winRate}%`,c:stats.winRate>=55?'#22c55e':'#f59e0b'},
+            {l:'Avg Win',v:`+${stats.avgWin}%`,c:'#22c55e'},
+            {l:'Avg Loss',v:`${stats.avgLoss}%`,c:'#ef4444'},
+            {l:'Total P&L',v:`${stats.total>=0?'+':''}${stats.total}%`,c:stats.total>=0?'#22c55e':'#ef4444'},
+            {l:'Rules',v:`${stats.compliance}%`,c:stats.compliance>=90?'#22c55e':'#f59e0b'},
+          ].map((s,i)=>(
+            <Card key={i} className="p-2.5 text-center">
+              <div className="text-xs text-gray-600 mb-1">{s.l}</div>
+              <div className="font-black text-sm"style={{color:s.c}}>{s.v}</div>
+            </Card>
+          ))}
+        </div>
+
+        {/* chart */}
+        <Card className="p-4"style={{height:220}}>
+          <canvas ref={canvasRef} style={{maxHeight:188}}/>
+        </Card>
+
+        {/* log button */}
+        <button onClick={()=>setShowForm(!showForm)}
+          className="w-full py-2.5 rounded-2xl text-sm font-bold text-white"
+          style={{background:showForm?'#374151':'#1d4ed8'}}>
+          {showForm?'✕ Cancel':'+ Log Trade'}
+        </button>
+
+        {showForm&&(
+          <Card className="p-4 space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              {[{l:'Ticker',k:'ticker',t:'text'},{l:'Date Opened',k:'dateOpened',t:'date'},
+                {l:'Composite Score',k:'score',t:'number'},{l:'Entry Price ($)',k:'entryPrice',t:'number'},
+                {l:'Stop-Loss ($)',k:'stopLoss',t:'number'},{l:'Exit Price ($)',k:'exitPrice',t:'number'},
+              ].map(f=>(
+                <div key={f.k}>
+                  <label className="text-xs text-gray-500 block mb-1">{f.l}</label>
+                  <input type={f.t} value={form[f.k]} onChange={e=>setF(f.k,e.target.value)}
+                    className="w-full px-3 py-2 text-sm"/>
+                </div>
+              ))}
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">Strategy</label>
+                <select value={form.strategy} onChange={e=>setF('strategy',e.target.value)} className="w-full px-3 py-2 text-sm">
+                  <option>Mean Reversion</option><option>Breakout Momentum</option><option>Earnings Catalyst</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">Status</label>
+                <select value={form.status} onChange={e=>setF('status',e.target.value)} className="w-full px-3 py-2 text-sm">
+                  <option>Open</option><option>Closed</option><option>Paper</option>
+                </select>
+              </div>
+            </div>
+            {[{l:'Why did you enter? (signals)',k:'right'},{l:'Lesson learned',k:'lesson'}].map(f=>(
+              <div key={f.k}>
+                <label className="text-xs text-gray-500 block mb-1">{f.l}</label>
+                <textarea value={form[f.k]} onChange={e=>setF(f.k,e.target.value)}
+                  className="w-full px-3 py-2 text-xs resize-none"rows={2}/>
+              </div>
+            ))}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={form.rulesFollowed}
+                onChange={e=>setF('rulesFollowed',e.target.checked)} className="w-4 h-4"/>
+              <span className="text-xs text-gray-400">All rules followed</span>
+            </label>
+            <button onClick={saveTrade}
+              className="w-full py-2.5 rounded-2xl text-sm font-bold text-white"style={{background:'#1d4ed8'}}>
+              Save
+            </button>
+          </Card>
+        )}
+
+        {/* trades list */}
+        <div className="space-y-2">
+          {trades.map(t=>(
+            <Card key={t.id} className="p-3">
+              <div className="flex justify-between items-start">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-black text-base text-white">{t.ticker}</span>
+                  <span className="text-xs text-gray-600">{t.strategy}</span>
+                  <span className="text-xs px-1.5 py-0.5 rounded-full"
+                    style={{background:t.status==='Open'?'#14532d':t.status==='Paper'?'#1e3a5f':'#1f2937',
+                      color:t.status==='Open'?'#4ade80':t.status==='Paper'?'#60a5fa':'#9ca3af'}}>
+                    {t.status}
+                  </span>
+                  {t.score&&<Pill text={`${t.score}/100`} color={t.score>=80?'#22c55e':t.score>=65?'#84cc16':'#f59e0b'}/>}
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {t.pnlPct!=null&&(
+                    <span className="font-black text-lg"style={{color:t.pnlPct>0?'#22c55e':'#ef4444'}}>
+                      {t.pnlPct>0?'+':''}{t.pnlPct.toFixed(1)}%
+                    </span>
+                  )}
+                  <button onClick={()=>del(t.id)} className="text-xs text-gray-700 hover:text-red-500">✕</button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs text-gray-600 mt-1">
+                {t.entryPrice&&<span>In: ${t.entryPrice}</span>}
+                {t.exitPrice&&<span>Out: ${t.exitPrice}</span>}
+                {t.stopLoss&&<span>SL: ${t.stopLoss}</span>}
+                <span>{t.dateOpened}</span>
+              </div>
+              {!t.rulesFollowed&&<div className="text-xs text-red-500 mt-1">⚠️ Rules violated</div>}
+              {t.lesson&&<div className="text-xs text-indigo-400 mt-1">💡 {t.lesson}</div>}
+            </Card>
+          ))}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+// ─── ROOT ─────────────────────────────────────────────────────────────────
+function App(){
+  const [view,setView]=useState('brief');
+  window._openJournal=()=>setView('journal');
+  if(view==='journal')return<Journal onBack={()=>setView('brief')}/>;
+  return<DailyBrief/>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
