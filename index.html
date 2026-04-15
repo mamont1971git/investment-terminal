@@ -109,10 +109,12 @@ async function fetchAllMarketData(){
     ]);
     if(!r.ok) throw new Error(`API returned ${r.status}`);
     const d = await r.json();
-    // Log any server-side errors
+    // Log server-side errors (skip info messages and expected VIX proxy fallback)
     if(d.errors){
       Object.entries(d.errors).forEach(([k,v])=>{
-        if(v) logError('FETCH_'+k.toUpperCase(), 'Server-side: '+v, {source:'api/market-data'});
+        if(v && !k.includes('_info') && !v.includes('VIX proxy')){
+          logError('FETCH_'+k.toUpperCase(), 'Server: '+v, {source:'api/market-data'});
+        }
       });
     }
     return d; // {vix, spy, fg, ts, errors}
@@ -474,7 +476,7 @@ function DailyBrief(){
                  sub:live?.vix?(live.vix.change>0?`▲ ${fmt(live.vix.pct)}%`:`▼ ${fmt(Math.abs(live.vix.pct))}%`):'manual entry',
                  c:live?.vix?(live.vix.value<18?'#22c55e':live.vix.value<25?'#6366f1':live.vix.value<30?'#f59e0b':'#ef4444'):'#94a3b8'},
                 {l:'Fear & Greed',v:live?.fg?live.fg.value:manualFg||'—',
-                 sub:live?.fg?live.fg.label:'manual entry',
+                 sub:live?.fg?(live.fg.label+(live.fg.source==='vix-proxy'?' (est. from VIX)':'')):'manual entry',
                  c:live?.fg?(live.fg.value<30?'#ef4444':live.fg.value<45?'#f97316':live.fg.value<55?'#f59e0b':live.fg.value<70?'#22c55e':'#84cc16'):'#94a3b8'},
                 {l:'SPY vs 50 EMA',v:live?.spy?`$${fmt(live.spy.price,0)}`:spyAbove?'Above':'Below',
                  sub:live?.spy?(live.spy.above?`+${fmt(live.spy.pctAbove)}% above`:` ${fmt(live.spy.pctAbove)}% below`):(spyAbove?'manual entry':'manual entry'),

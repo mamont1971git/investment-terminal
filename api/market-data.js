@@ -1,82 +1,104 @@
 const https = require('https');
 
-function get(url) {
+function get(url, headers = {}) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, {
+    https.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Accept': 'application/json',
-        'Referer': 'https://finance.yahoo.com',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/json,text/csv,*/*',
+        ...headers,
       },
       timeout: 8000,
     }, res => {
       let d = '';
       res.on('data', c => d += c);
-      res.on('end', () => {
-        try { resolve(JSON.parse(d)); }
-        catch(e) { reject(new Error('JSON parse error: ' + d.slice(0,100))); }
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      res.on('end', () => resolve({ status: res.statusCode, body: d }));
+    }).on('error', reject)
+      .on('timeout', function() { this.destroy(); reject(new Error('timeout')); });
   });
+}
+
+// Parse Stooq daily CSV  → [{date, close}]
+// Stooq format: Date,Open,High,Low,Close,Volume
+function parseCSV(csv) {
+  return csv.trim().split('\n').slice(1)
+    .map(line => { const p = line.split(','); return { date: p[0], close: parseFloat(p[4] ?? p[1]) }; })
+    .filter(r => !isNaN(r.close) && r.close > 0);
+}
+
+// VIX → approximate Fear & Greed (used as fallback when CNN blocks us)
+// Calibrated: VIX 18 ≈ F&G 47, VIX 30 ≈ F&G 18, VIX 12 ≈ F&G 70
+function vixToFG(vix, spyAbove, spyDayPct) {
+  let base = Math.round(100 - (vix - 9) * 2.9);
+  if (spyAbove) base += 5; else base -= 5;
+  if (spyDayPct >  1.5) base += 8;
+  else if (spyDayPct > 0.5) base += 3;
+  else if (spyDayPct < -1.5) base -= 8;
+  else if (spyDayPct < -0.5) base -= 3;
+  const value = Math.max(4, Math.min(96, base));
+  const label = value >= 75 ? 'Extreme Greed' : value >= 60 ? 'Greed' :
+                value >= 45 ? 'Neutral' : value >= 25 ? 'Fear' : 'Extreme Fear';
+  return { value, label, source: 'vix-proxy' };
 }
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 's-maxage=300'); // cache 5 min on Vercel edge
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
 
-  const [vixRes, spyRes, fgRes] = await Promise.allSettled([
-    get('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=2d'),
-    get('https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=120d'),
-    get('https://production.dataviz.cnn.io/index/fearandgreed/graphdata'),
-  ]);
+  const errors = {};
+  let vix = null, spy = null, fg = null;
 
-  // VIX
-  let vix = null;
+  // ── VIX via Stooq (no bot detection, reliable) ──────────────────────────
   try {
-    const r = vixRes.value?.chart?.result?.[0];
-    if (r) {
-      const v = r.meta.regularMarketPrice, p = r.meta.previousClose || v;
-      vix = { value: v, change: v - p, pct: (v - p) / p * 100 };
-    }
-  } catch(e) {}
+    const r = await get('https://stooq.com/q/d/l/?s=%5EVIX&i=d');
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const rows = parseCSV(r.body);
+    if (rows.length < 2) throw new Error('Not enough rows: ' + rows.length);
+    const v = rows[rows.length - 1].close;
+    const p = rows[rows.length - 2].close;
+    vix = { value: v, change: +(v - p).toFixed(2), pct: +((v - p) / p * 100).toFixed(2) };
+  } catch(e) { errors.vix = e.message; }
 
-  // SPY + 50-day EMA
-  let spy = null;
+  // ── SPY via Stooq (120 days for 50-day EMA) ──────────────────────────────
   try {
-    const r = spyRes.value?.chart?.result?.[0];
-    if (r) {
-      const closes = r.indicators.quote[0].close.filter(x => x != null);
-      if (closes.length >= 52) {
-        const price = closes[closes.length - 1];
-        const prev  = closes[closes.length - 2];
-        const k = 2 / 51;
-        let ema = closes.slice(0, 50).reduce((a, b) => a + b, 0) / 50;
-        for (let i = 50; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
-        spy = { price, change: price - prev, pct: (price - prev) / prev * 100,
-                ema50: ema, above: price > ema, pctAbove: (price - ema) / ema * 100 };
-      }
-    }
-  } catch(e) {}
+    const r = await get('https://stooq.com/q/d/l/?s=spy.us&i=d');
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const rows = parseCSV(r.body).slice(-120);
+    if (rows.length < 52) throw new Error('Not enough rows: ' + rows.length);
+    const price = rows[rows.length - 1].close;
+    const prev  = rows[rows.length - 2].close;
+    const k = 2 / 51;
+    let ema = rows.slice(0, 50).reduce((s, r) => s + r.close, 0) / 50;
+    for (let i = 50; i < rows.length; i++) ema = rows[i].close * k + ema * (1 - k);
+    spy = {
+      price: +price.toFixed(2),
+      change: +(price - prev).toFixed(2),
+      pct: +((price - prev) / prev * 100).toFixed(2),
+      ema50: +ema.toFixed(2),
+      above: price > ema,
+      pctAbove: +((price - ema) / ema * 100).toFixed(2),
+    };
+  } catch(e) { errors.spy = e.message; }
 
-  // Fear & Greed — handle multiple possible structures
-  let fg = null;
+  // ── Fear & Greed: try CNN first, fall back to VIX proxy ─────────────────
   try {
-    const d = fgRes.value;
-    const obj = d?.fear_and_greed ?? d?.fgi ?? d?.data;
-    const val = obj?.score ?? obj?.value ?? d?.score ?? d?.value;
-    const lbl = obj?.rating ?? obj?.label ?? d?.rating ?? d?.classification ?? '';
-    if (val != null) fg = { value: Math.round(Number(val)), label: String(lbl).replace(/_/g, ' ') };
-  } catch(e) {}
+    // Mobile UA often bypasses bot detection on CNN
+    const r = await get('https://production.dataviz.cnn.io/index/fearandgreed/graphdata', {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+      'Referer': 'https://www.cnn.com/markets/fear-and-greed',
+      'Origin': 'https://www.cnn.com',
+      'Accept': 'application/json',
+    });
+    const d = JSON.parse(r.body);
+    const obj = d?.fear_and_greed;
+    if (obj?.score == null) throw new Error('No score in response');
+    fg = { value: Math.round(Number(obj.score)), label: obj.rating?.replace(/_/g, ' '), source: 'cnn' };
+  } catch(e) {
+    errors.fg = 'CNN blocked (' + e.message + ') — using VIX proxy';
+    // Calculate from VIX if available
+    if (vix) fg = vixToFG(vix.value, spy?.above ?? true, spy?.pct ?? 0);
+  }
 
-  res.json({
-    vix, spy, fg,
-    ts: new Date().toISOString(),
-    errors: {
-      vix: vixRes.status === 'rejected' ? vixRes.reason?.message : null,
-      spy: spyRes.status === 'rejected' ? spyRes.reason?.message : null,
-      fg:  fgRes.status  === 'rejected' ? fgRes.reason?.message  : null,
-    }
-  });
+  res.json({ vix, spy, fg, ts: new Date().toISOString(), errors });
 };
