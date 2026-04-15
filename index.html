@@ -97,94 +97,31 @@ const DEMO_TRADES=[
    right:'RSI(2) at 8.1. Strong EMA alignment. No earnings for 18 days. F&G was 29 at entry.',lesson:''},
 ];
 
-// ─── live data with timeout ─────────────────────────────────────────────
-const fetchWithTimeout=(promise,ms=6000)=>
-  Promise.race([promise,new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),ms))]);
-
-const PROXY='https://corsproxy.io/?';
-
-async function fetchVIX(){
+// ─── live data — single call to our Vercel serverless API ────────────────
+// All market fetching now happens server-side (no CORS issues)
+async function fetchAllMarketData(){
   try{
-    const url=PROXY+encodeURIComponent('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=2d');
-    const r=await fetchWithTimeout(fetch(url));
-    const d=await r.json();
-    const res=d?.chart?.result?.[0];
-    if(!res){logError('FETCH_VIX','No data in response',{url});return null;}
-    const v=res.meta.regularMarketPrice,p=res.meta.previousClose||v;
-    return{value:v,change:v-p,pct:((v-p)/p*100)};
-  }catch(e){
-    logError('FETCH_VIX',e.message||'Network error',{protocol:window.location.protocol});
-    return null;
-  }
-}
-async function fetchSPY(){
-  try{
-    const url=PROXY+encodeURIComponent('https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=120d');
-    const r=await fetchWithTimeout(fetch(url));
-    const d=await r.json();
-    const res=d?.chart?.result?.[0];
-    if(!res){logError('FETCH_SPY','No data in response',{url});return null;}
-    const closes=res.indicators.quote[0].close.filter(Boolean);
-    const price=closes[closes.length-1],prev=closes[closes.length-2];
-    const k=2/51;let ema=closes.slice(0,50).reduce((a,b)=>a+b,0)/50;
-    for(let i=50;i<closes.length;i++)ema=closes[i]*k+ema*(1-k);
-    return{price,change:price-prev,pct:((price-prev)/prev*100),ema50:ema,above:price>ema,pctAbove:(price-ema)/ema*100};
-  }catch(e){
-    logError('FETCH_SPY',e.message||'Network error',{protocol:window.location.protocol});
-    return null;
-  }
-}
-async function fetchFG(){
-  // Strategy: try 3 sources in order, return first success
-  const attempts = [
-    // 1. feargreedchart.com — free, CORS-enabled, no proxy needed
-    async () => {
-      const r = await fetchWithTimeout(fetch('https://feargreedchart.com/api/?action=all'));
-      const d = await r.json();
-      // handle various response shapes
-      const val = d?.now?.value ?? d?.value ?? d?.current ?? d?.score ?? d?.fgi?.now?.value;
-      const lbl = d?.now?.value_classification ?? d?.label ?? d?.rating ?? d?.classification ?? d?.fgi?.now?.value_classification;
-      if(val==null) throw new Error('Unexpected structure: '+JSON.stringify(d).slice(0,100));
-      return {value: Math.round(Number(val)), label: String(lbl||'').replace(/_/g,' ')};
-    },
-    // 2. CNN endpoint direct (works when hosted, no CORS issue from Vercel)
-    async () => {
-      const r = await fetchWithTimeout(fetch('https://production.dataviz.cnn.io/index/fearandgreed/graphdata'));
-      const d = await r.json();
-      // handle both old {fear_and_greed:{score,rating}} and new structures
-      const fg = d?.fear_and_greed ?? d?.fgi ?? d?.data;
-      const val = fg?.score ?? fg?.value ?? d?.score ?? d?.value;
-      const lbl = fg?.rating ?? fg?.label ?? d?.rating ?? d?.classification;
-      if(val==null) throw new Error('No value in CNN response: '+JSON.stringify(d).slice(0,120));
-      return {value: Math.round(Number(val)), label: String(lbl||'').replace(/_/g,' ')};
-    },
-    // 3. CNN via CORS proxy (last resort)
-    async () => {
-      const url = PROXY+encodeURIComponent('https://production.dataviz.cnn.io/index/fearandgreed/graphdata');
-      const r = await fetchWithTimeout(fetch(url));
-      const d = await r.json();
-      const fg = d?.fear_and_greed ?? d?.fgi ?? d?.data;
-      const val = fg?.score ?? fg?.value ?? d?.score;
-      const lbl = fg?.rating ?? fg?.label ?? d?.rating;
-      if(val==null) throw new Error('No value via proxy: '+JSON.stringify(d).slice(0,120));
-      return {value: Math.round(Number(val)), label: String(lbl||'').replace(/_/g,' ')};
-    },
-  ];
-
-  for(let i=0; i<attempts.length; i++){
-    try{
-      const result = await attempts[i]();
-      return result;
-    }catch(e){
-      logError('FETCH_FG', `Attempt ${i+1}/3 failed: ${e.message}`, {attempt: i+1});
-      if(i === attempts.length-1){
-        logError('FETCH_FG','All sources failed — enter F&G manually',{protocol:window.location.protocol});
-        return null;
-      }
+    const isLocal = window.location.protocol === 'file:';
+    if(isLocal) throw new Error('Running as local file — open the hosted URL to get live data');
+    const r = await Promise.race([
+      fetch('/api/market-data'),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout after 10s')),10000))
+    ]);
+    if(!r.ok) throw new Error(`API returned ${r.status}`);
+    const d = await r.json();
+    // Log any server-side errors
+    if(d.errors){
+      Object.entries(d.errors).forEach(([k,v])=>{
+        if(v) logError('FETCH_'+k.toUpperCase(), 'Server-side: '+v, {source:'api/market-data'});
+      });
     }
+    return d; // {vix, spy, fg, ts, errors}
+  }catch(e){
+    logError('FETCH_ALL', e.message||'Failed to call /api/market-data', {protocol:window.location.protocol});
+    return {vix:null, spy:null, fg:null};
   }
-  return null;
 }
+// fetchFG removed — data now fetched server-side via /api/market-data
 
 // ─── regime logic ─────────────────────────────────────────────────────────
 function getRegime(vix,fg,spyAbove){
@@ -401,17 +338,11 @@ function DailyBrief(){
 
   const refresh=useCallback(async()=>{
     setStatus('loading');setLive(null);
-    try{
-      const [vix,spy,fg]=await Promise.all([fetchVIX(),fetchSPY(),fetchFG()]);
-      const freshErrors=load('inv_errors',[]);
-      setBannerErrors(freshErrors);
-      if(!vix&&!spy&&!fg){setStatus('failed');}
-      else{setLive({vix,spy,fg});setStatus('done');setTs(new Date());}
-    }catch(e){
-      logError('FETCH_ALL',e.message||'Unexpected error during refresh');
-      setBannerErrors(load('inv_errors',[]));
-      setStatus('failed');
-    }
+    const d=await fetchAllMarketData();
+    const freshErrors=load('inv_errors',[]);
+    setBannerErrors(freshErrors);
+    if(!d.vix&&!d.spy&&!d.fg){setStatus('failed');}
+    else{setLive({vix:d.vix,spy:d.spy,fg:d.fg});setStatus('done');setTs(new Date());}
   },[]);
 
   useEffect(()=>{refresh();},[]);
