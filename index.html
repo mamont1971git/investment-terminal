@@ -135,16 +135,55 @@ async function fetchSPY(){
   }
 }
 async function fetchFG(){
-  try{
-    const url=PROXY+encodeURIComponent('https://production.dataviz.cnn.io/index/fearandgreed/graphdata');
-    const r=await fetchWithTimeout(fetch(url));
-    const d=await r.json();const fg=d?.fear_and_greed;
-    if(!fg){logError('FETCH_FG','No fear_and_greed in response',{url});return null;}
-    return{value:Math.round(Number(fg.score)),label:fg.rating?.replace(/_/g,' ')};
-  }catch(e){
-    logError('FETCH_FG',e.message||'Network error',{protocol:window.location.protocol});
-    return null;
+  // Strategy: try 3 sources in order, return first success
+  const attempts = [
+    // 1. feargreedchart.com — free, CORS-enabled, no proxy needed
+    async () => {
+      const r = await fetchWithTimeout(fetch('https://feargreedchart.com/api/?action=all'));
+      const d = await r.json();
+      // handle various response shapes
+      const val = d?.now?.value ?? d?.value ?? d?.current ?? d?.score ?? d?.fgi?.now?.value;
+      const lbl = d?.now?.value_classification ?? d?.label ?? d?.rating ?? d?.classification ?? d?.fgi?.now?.value_classification;
+      if(val==null) throw new Error('Unexpected structure: '+JSON.stringify(d).slice(0,100));
+      return {value: Math.round(Number(val)), label: String(lbl||'').replace(/_/g,' ')};
+    },
+    // 2. CNN endpoint direct (works when hosted, no CORS issue from Vercel)
+    async () => {
+      const r = await fetchWithTimeout(fetch('https://production.dataviz.cnn.io/index/fearandgreed/graphdata'));
+      const d = await r.json();
+      // handle both old {fear_and_greed:{score,rating}} and new structures
+      const fg = d?.fear_and_greed ?? d?.fgi ?? d?.data;
+      const val = fg?.score ?? fg?.value ?? d?.score ?? d?.value;
+      const lbl = fg?.rating ?? fg?.label ?? d?.rating ?? d?.classification;
+      if(val==null) throw new Error('No value in CNN response: '+JSON.stringify(d).slice(0,120));
+      return {value: Math.round(Number(val)), label: String(lbl||'').replace(/_/g,' ')};
+    },
+    // 3. CNN via CORS proxy (last resort)
+    async () => {
+      const url = PROXY+encodeURIComponent('https://production.dataviz.cnn.io/index/fearandgreed/graphdata');
+      const r = await fetchWithTimeout(fetch(url));
+      const d = await r.json();
+      const fg = d?.fear_and_greed ?? d?.fgi ?? d?.data;
+      const val = fg?.score ?? fg?.value ?? d?.score;
+      const lbl = fg?.rating ?? fg?.label ?? d?.rating;
+      if(val==null) throw new Error('No value via proxy: '+JSON.stringify(d).slice(0,120));
+      return {value: Math.round(Number(val)), label: String(lbl||'').replace(/_/g,' ')};
+    },
+  ];
+
+  for(let i=0; i<attempts.length; i++){
+    try{
+      const result = await attempts[i]();
+      return result;
+    }catch(e){
+      logError('FETCH_FG', `Attempt ${i+1}/3 failed: ${e.message}`, {attempt: i+1});
+      if(i === attempts.length-1){
+        logError('FETCH_FG','All sources failed — enter F&G manually',{protocol:window.location.protocol});
+        return null;
+      }
+    }
   }
+  return null;
 }
 
 // ─── regime logic ─────────────────────────────────────────────────────────
