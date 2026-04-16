@@ -332,6 +332,66 @@ function PositionCard({t,regime,live}){
   );
 }
 
+// ─── QUICK COMMANDS ──────────────────────────────────────────────────────
+function QuickCommands(){
+  const [copied,setCopied]=useState(null);
+
+  const copy=(id,text)=>{
+    navigator.clipboard.writeText(text).then(()=>{
+      setCopied(id);
+      setTimeout(()=>setCopied(null),2000);
+    }).catch(()=>{
+      // Fallback for non-secure contexts
+      const el=document.createElement('textarea');
+      el.value=text;document.body.appendChild(el);el.select();
+      document.execCommand('copy');document.body.removeChild(el);
+      setCopied(id);setTimeout(()=>setCopied(null),2000);
+    });
+  };
+
+  const cmds=[
+    {id:'analysis', icon:'🤖', label:'Full Analysis',     cmd:'run investment analysis',        color:'#6366f1', desc:'Signals + recommendations'},
+    {id:'pulse',    icon:'🌡️', label:'Market Pulse',      cmd:'live market pulse',               color:'#3b82f6', desc:'Quick VIX/F&G/regime'},
+    {id:'msft',     icon:'📈', label:'Review MSFT',       cmd:'portfolio review',                color:'#22c55e', desc:'Hold / take profit / exit?'},
+    {id:'score',    icon:'🎯', label:'Score a Ticker',    cmd:'score ',                          color:'#f59e0b', desc:'Type ticker after pasting'},
+    {id:'weekly',   icon:'📋', label:'Weekly Review',     cmd:'weekly review',                   color:'#a78bfa', desc:'7-question audit'},
+    {id:'agents',   icon:'▶️', label:'Start Agents',      cmd:'start agents',                    color:'#94a3b8', desc:'Enable all 4 scans'},
+  ];
+
+  return(
+    <Card className="p-4">
+      <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">
+        Quick Commands — click to copy, paste in Claude
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {cmds.map(c=>{
+          const isCopied=copied===c.id;
+          return(
+            <button key={c.id}
+              onClick={()=>copy(c.id,c.cmd)}
+              className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-left transition-all"
+              style={{
+                background: isCopied?c.color+'30':'#0a0e1a',
+                border:`1px solid ${isCopied?c.color:' #1e2d4a'}`,
+              }}>
+              <span className="text-lg flex-shrink-0">{c.icon}</span>
+              <div className="min-w-0">
+                <div className="text-xs font-bold"style={{color:isCopied?c.color:'#e2e8f0'}}>
+                  {isCopied?'✓ Copied!':c.label}
+                </div>
+                <div className="text-xs text-gray-600 truncate">{c.desc}</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="text-xs text-gray-700 text-center mt-3">
+        Paste the copied command into your Claude chat → hit Enter
+      </div>
+    </Card>
+  );
+}
+
 // ─── DAILY BRIEF (main view) ──────────────────────────────────────────────
 function DailyBrief(){
   const [live,setLive]=useState(null);
@@ -538,17 +598,20 @@ function DailyBrief(){
           </button>
         </Card>
 
+        {/* ── quick commands ── */}
+        <QuickCommands/>
+
         {/* ── what to do next ── */}
         <Card>
           <div className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-gray-500"
             style={{borderBottom:'1px solid #0f1828'}}>
-            Next Actions
+            Signal Sources
           </div>
           {[
-            {icon:'🤖',title:'Get full AI recommendations',desc:'Say "run investment analysis" to Claude — it fetches all signals and gives specific BUY/SELL/HOLD/TAKE PROFIT calls',color:'#6366f1'},
-            {icon:'🏛️',title:'Check Capitol Trades',desc:'See what Congress members are buying — cluster buys near legislation = strong signal',color:'#f59e0b',url:'https://www.capitoltrades.com'},
-            {icon:'🔍',title:'Find today\'s candidates',desc:'Open Finviz MR Screener (RSI<10 stocks above 200 EMA) — paste tickers to Claude for scoring',color:'#3b82f6',url:'https://finviz.com/screener.ashx?v=111&f=rsi_os10,ma200_pa,cap_midover&o=-rsi'},
-            {icon:'📓',title:'Log a trade',desc:'Record paper trades in the journal to start building your track record',color:'#22c55e'},
+            {icon:'🏛️',title:'Capitol Trades',desc:'Congress member buys — cluster buys near legislation = strong signal',color:'#f59e0b',url:'https://www.capitoltrades.com'},
+            {icon:'🔍',title:'Finviz MR Screener',desc:'RSI<10 stocks above 200 EMA — paste tickers into Claude for scoring',color:'#3b82f6',url:'https://finviz.com/screener.ashx?v=111&f=rsi_os10,ma200_pa,cap_midover&o=-rsi'},
+            {icon:'😱',title:'CNN Fear & Greed',desc:'Current market sentiment 0–100',color:'#6366f1',url:'https://cnn.com/markets/fear-and-greed'},
+            {icon:'🌍',title:'World Monitor',desc:'Geopolitical risk — escalation = reduce exposure',color:'#94a3b8',url:'https://worldmonitor.app'},
           ].map((a,i)=>(
             <div key={i} className="flex items-start gap-3 px-4 py-3"
               style={{borderTop:'1px solid #0f1828',background:'#0a0e1a'}}>
@@ -556,8 +619,8 @@ function DailyBrief(){
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-bold mb-0.5"style={{color:a.color}}>{a.title}</div>
                 <div className="text-xs text-gray-500 leading-relaxed">{a.desc}</div>
-                {a.url&&<a href={a.url} target="_blank" rel="noreferrer"
-                  className="text-xs text-blue-500 mt-1 inline-block">Open Finviz ↗</a>}
+                <a href={a.url} target="_blank" rel="noreferrer"
+                  className="text-xs text-blue-500 mt-1 inline-block">Open ↗</a>
               </div>
             </div>
           ))}
