@@ -479,7 +479,175 @@ function OrderDrafts(){
   );
 }
 
-// ─── QUICK COMMANDS ──────────────────────────────────────────────────────
+// ─── ANALYSIS PANEL — Claude embedded directly ───────────────────────────
+function AnalysisPanel(){
+  const [loading,setLoading]=useState(false);
+  const [result,setResult]=useState(null);
+  const [error,setError]=useState(null);
+  const [command,setCommand]=useState('full_analysis');
+
+  const run=async(cmd)=>{
+    if(window.location.protocol==='file:'){
+      setError('Live analysis requires the hosted app. Open investment-terminal-tawny.vercel.app');
+      return;
+    }
+    setLoading(true);setResult(null);setError(null);setCommand(cmd);
+    try{
+      const r=await fetch('/api/analyze',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({command:cmd}),
+      });
+      const d=await r.json();
+      if(d.error)throw new Error(d.error);
+      setResult(d);
+    }catch(e){setError(e.message);}
+    finally{setLoading(false);}
+  };
+
+  const cmds=[
+    {id:'run investment analysis',label:'🤖 Full Analysis',color:'#6366f1',desc:'Signals + recommendations'},
+    {id:'portfolio review',label:'📈 Portfolio Review',color:'#22c55e',desc:'All positions: hold/exit/profit?'},
+    {id:'live market pulse',label:'🌡️ Market Pulse',color:'#3b82f6',desc:'Quick regime check'},
+  ];
+
+  const regimeColor=n=>!n?'#94a3b8':n.includes('CAUTION')||n.includes('FEAR')?'#ef4444':n.includes('BREAKOUT')?'#22c55e':'#6366f1';
+
+  return(
+    <Card className="overflow-hidden">
+      {/* header with run buttons */}
+      <div className="px-4 py-3"style={{background:'#0f1828',borderBottom:'1px solid #1e2d4a'}}>
+        <div className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">
+          AI Analysis — powered by Claude
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {cmds.map(c=>(
+            <button key={c.id} onClick={()=>run(c.id)} disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all"
+              style={{
+                background:loading&&command===c.id?c.color+'40':c.color+'18',
+                color:c.color, border:`1px solid ${c.color}44`,
+                opacity:loading&&command!==c.id?0.5:1
+              }}>
+              {loading&&command===c.id?<><Spin/> Analyzing…</>:<>{c.label}</>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* loading */}
+      {loading&&(
+        <div className="px-4 py-6 flex items-center gap-3"style={{background:'#08101e'}}>
+          <Spin/>
+          <div>
+            <div className="text-sm text-gray-300 font-semibold">Claude is analyzing the market…</div>
+            <div className="text-xs text-gray-500 mt-0.5">Fetching VIX, SPY, checking positions, scoring candidates</div>
+          </div>
+        </div>
+      )}
+
+      {/* error */}
+      {error&&(
+        <div className="px-4 py-3 text-xs text-red-400"style={{background:'#1a0808'}}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {/* results */}
+      {result&&!loading&&(
+        <div className="fade">
+          {/* regime */}
+          {result.regime&&(
+            <div className="px-4 py-4"
+              style={{background:`linear-gradient(135deg,${regimeColor(result.regime.name)}0a,#08101e)`,borderBottom:'1px solid #1e2d4a'}}>
+              <div className="text-base font-black mb-1"style={{color:regimeColor(result.regime.name)}}>
+                {result.regime.name}
+              </div>
+              <div className="text-sm text-gray-200 font-semibold mb-2">{result.regime.headline}</div>
+              <div className="text-xs text-gray-400 leading-relaxed mb-2">{result.regime.why}</div>
+              <div className="text-xs font-semibold rounded-xl px-3 py-2 inline-block"
+                style={{background:regimeColor(result.regime.name)+'18',color:regimeColor(result.regime.name)}}>
+                → {result.regime.action}
+              </div>
+            </div>
+          )}
+
+          {/* positions */}
+          {result.positions?.length>0&&(
+            <div style={{borderBottom:'1px solid #1e2d4a'}}>
+              <div className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-gray-500"
+                style={{background:'#0f1828'}}>Open Positions</div>
+              {result.positions.map((p,i)=>{
+                const c=p.recommendation==='HOLD'?'#22c55e':p.recommendation==='EXIT_NOW'?'#ef4444':'#f59e0b';
+                return(
+                  <div key={i} className="px-4 py-3"style={{background:'#0a0e1a',borderTop:'1px solid #0f1828'}}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-black text-white">{p.ticker}</span>
+                      <Pill text={p.recommendation.replace('_',' ')} color={c}/>
+                      {p.pnlPct!=null&&<span className="text-xs font-bold"style={{color:p.pnlPct>0?'#22c55e':'#ef4444'}}>{p.pnlPct>0?'+':''}{p.pnlPct?.toFixed(1)}%</span>}
+                    </div>
+                    <div className="text-xs text-gray-400 leading-relaxed">{p.reasoning}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* opportunities */}
+          {result.opportunities?.length>0&&(
+            <div style={{borderBottom:'1px solid #1e2d4a'}}>
+              <div className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-gray-500"
+                style={{background:'#0f1828'}}>Opportunities</div>
+              {result.opportunities.map((o,i)=>{
+                const c=o.action==='BUY'?'#22c55e':o.action==='WATCHLIST'?'#f59e0b':'#ef4444';
+                return(
+                  <div key={i} className="px-4 py-3"style={{background:'#0a0e1a',borderTop:'1px solid #0f1828'}}>
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="font-black text-white">{o.ticker}</span>
+                      <Pill text={o.action} color={c}/>
+                      {o.score&&<Pill text={`${o.score}/100`} color={o.score>=80?'#22c55e':o.score>=65?'#84cc16':'#f59e0b'}/>}
+                      <span className="text-xs text-gray-500">{o.strategy}</span>
+                    </div>
+                    <div className="text-xs text-gray-400 leading-relaxed mb-2">{o.reasoning}</div>
+                    {o.action==='BUY'&&o.entryPrice&&(
+                      <div className="flex gap-3 text-xs">
+                        <span className="text-gray-500">Entry: <span className="text-gray-200">${o.entryPrice}</span></span>
+                        <span className="text-red-400">Stop: ${o.stop}</span>
+                        <span className="text-green-400">TP1: ${o.tp1}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* drafts created */}
+          {result.draftsCreated?.length>0&&(
+            <div className="px-4 py-3 text-xs"style={{background:'#0f1a0f',borderBottom:'1px solid #1e2d4a'}}>
+              <span className="text-green-400 font-bold">✅ {result.draftsCreated.length} Order Draft{result.draftsCreated.length>1?'s':''} created</span>
+              <span className="text-gray-500 ml-2">— scroll up to confirm or reject</span>
+            </div>
+          )}
+
+          {/* footer */}
+          <div className="px-4 py-3 flex items-center justify-between"style={{background:'#0f1828'}}>
+            <div className="text-xs text-gray-600">{result.stance} stance · {result.recommendedCash} cash</div>
+            <div className="text-xs text-gray-600">{result.nextCheckIn}</div>
+          </div>
+        </div>
+      )}
+
+      {/* empty state */}
+      {!loading&&!result&&!error&&(
+        <div className="px-4 py-5 text-center text-xs text-gray-600">
+          Click a button above to run analysis — results appear here
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── QUICK COMMANDS (fallback copy buttons) ──────────────────────────────
 function QuickCommands(){
   const [copied,setCopied]=useState(null);
 
@@ -706,6 +874,9 @@ function DailyBrief(){
             </div>
           </Card>
         )}
+
+        {/* ── AI analysis — runs Claude directly ── */}
+        <AnalysisPanel/>
 
         {/* ── order drafts ── */}
         <OrderDrafts/>
