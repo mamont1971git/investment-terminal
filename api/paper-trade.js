@@ -73,12 +73,13 @@ module.exports = async (req, res) => {
     'TP1':                { number:tp1 },
     'TP2':                { number:tp2 },
     'TP3':                { number:tp3 },
-    'date:Date Opened:start': today,
+    'Date Opened':        { date:{start:today} },
     'What Went Right':    { rich_text:[{text:{content:t.reasoning||''}}] },
   };
+  const REGIME_MAP = {'MEAN REVERSION ZONE':'Mean Reversion Zone','BREAKOUT ZONE':'Breakout Zone','CAUTION ZONE':'Caution Zone','EXTREME FEAR':'Caution Zone'};
   if (score)             props['Composite Score']      = { number:score };
   if (score)             props['Recommendation Score'] = { number:score };
-  if (t.regime)          props['Market Regime at Entry']= { select:{name:t.regime} };
+  if (t.regime)          props['Market Regime at Entry']= { select:{name:REGIME_MAP[t.regime.toUpperCase()]||t.regime} };
   if (t.positionPct)     props['Position Size %']      = { number:Number(t.positionPct) };
 
   try {

@@ -50,26 +50,39 @@ module.exports = async (req, res) => {
         tp2=+(entryPrice*1.15).toFixed(2), tp3=+(entryPrice*1.22).toFixed(2);
   const today=new Date().toISOString().split('T')[0];
 
-  const r = await notionPost('/v1/pages', {
-    parent:{database_id:TRADE_DB},
-    properties:{
-      'Trade':           {title:[{text:{content:`⏳ ${ticker} — ${t.strategy||'Paper'} [DRAFT]`}}]},
-      'Ticker':          {rich_text:[{text:{content:ticker}}]},
-      'Strategy':        {select:{name:t.strategy||'Mean Reversion'}},
-      'Status':          {select:{name:'Draft'}},
-      'Simulation Mode': {checkbox:true},
-      'Entry Price':     {number:entryPrice},
-      'Stop-Loss Price': {number:stop},
-      'TP1':             {number:tp1}, 'TP2':{number:tp2}, 'TP3':{number:tp3},
-      'Composite Score': {number:t.score?Number(t.score):null},
-      'Recommendation Score':{number:t.score?Number(t.score):null},
-      'What Went Right': {rich_text:[{text:{content:t.reasoning||''}}]},
-      'date:Date Opened:start': today,
-      ...(t.regime?{'Market Regime at Entry':{select:{name:t.regime}}}:{}),
-      ...(t.positionPct?{'Position Size %':{number:Number(t.positionPct)}}:{}),
-    }
-  }, TOKEN);
+  // Map regime names from Claude (UPPER CASE) to Notion select options (Title Case)
+  const REGIME_MAP = {
+    'MEAN REVERSION ZONE': 'Mean Reversion Zone',
+    'BREAKOUT ZONE': 'Breakout Zone',
+    'CAUTION ZONE': 'Caution Zone',
+    'EXTREME FEAR': 'Caution Zone',
+  };
+  const regimeName = t.regime ? (REGIME_MAP[t.regime.toUpperCase()] || REGIME_MAP[t.regime] || t.regime) : null;
 
-  res.json({ok:r.status<300, notionId:r.body.id, url:r.body.url,
+  const props = {
+    'Trade':           {title:[{text:{content:`⏳ ${ticker} — ${t.strategy||'Paper'} [DRAFT]`}}]},
+    'Ticker':          {rich_text:[{text:{content:ticker}}]},
+    'Strategy':        {select:{name:t.strategy||'Mean Reversion'}},
+    'Status':          {select:{name:'Draft'}},
+    'Simulation Mode': {checkbox:true},
+    'Entry Price':     {number:entryPrice},
+    'Stop-Loss Price': {number:stop},
+    'TP1':             {number:tp1}, 'TP2':{number:tp2}, 'TP3':{number:tp3},
+    'Composite Score': {number:t.score?Number(t.score):null},
+    'Recommendation Score':{number:t.score?Number(t.score):null},
+    'What Went Right': {rich_text:[{text:{content:(t.reasoning||'').slice(0,2000)}}]},
+    'Date Opened':     {date:{start:today}},
+  };
+  if (regimeName)    props['Market Regime at Entry'] = {select:{name:regimeName}};
+  if (t.positionPct) props['Position Size %']        = {number:Number(t.positionPct)};
+
+  const r = await notionPost('/v1/pages', { parent:{database_id:TRADE_DB}, properties:props }, TOKEN);
+
+  if (r.status >= 300) {
+    const msg = r.body?.message || r.body?.code || JSON.stringify(r.body).slice(0,200);
+    return res.json({ok:false, error:`Notion error: ${msg}`, status:r.status});
+  }
+
+  res.json({ok:true, notionId:r.body.id, url:r.body.url,
     draft:{ticker,entryPrice,stop,tp1,tp2,tp3,score:t.score,date:today}});
 };

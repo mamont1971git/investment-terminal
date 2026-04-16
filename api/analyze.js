@@ -100,24 +100,24 @@ async function createDraft(ticker, strategy, score, reasoning, regime, positionP
   const stop=+(entryPrice*0.93).toFixed(2),tp1=+(entryPrice*1.08).toFixed(2),
         tp2=+(entryPrice*1.15).toFixed(2),tp3=+(entryPrice*1.22).toFixed(2);
   const today=new Date().toISOString().split('T')[0];
-  const body=JSON.stringify({
-    parent:{database_id:TRADE_DB},
-    properties:{
-      'Trade':{title:[{text:{content:`⏳ ${ticker} — ${strategy} [DRAFT]`}}]},
-      'Ticker':{rich_text:[{text:{content:ticker}}]},
-      'Strategy':{select:{name:strategy}},
-      'Status':{select:{name:'Draft'}},
-      'Simulation Mode':{checkbox:true},
-      'Entry Price':{number:entryPrice},
-      'Stop-Loss Price':{number:stop},
-      'TP1':{number:tp1},'TP2':{number:tp2},'TP3':{number:tp3},
-      'Composite Score':{number:score},
-      'What Went Right':{rich_text:[{text:{content:reasoning||''}}]},
-      'date:Date Opened:start':today,
-      ...(regime?{'Market Regime at Entry':{select:{name:regime}}}:{}),
-      ...(positionPct?{'Position Size %':{number:positionPct}}:{}),
-    }
-  });
+  const REGIME_MAP={'MEAN REVERSION ZONE':'Mean Reversion Zone','BREAKOUT ZONE':'Breakout Zone','CAUTION ZONE':'Caution Zone','EXTREME FEAR':'Caution Zone'};
+  const regimeName=regime?(REGIME_MAP[regime.toUpperCase()]||regime):null;
+  const props={
+    'Trade':{title:[{text:{content:`⏳ ${ticker} — ${strategy} [DRAFT]`}}]},
+    'Ticker':{rich_text:[{text:{content:ticker}}]},
+    'Strategy':{select:{name:strategy}},
+    'Status':{select:{name:'Draft'}},
+    'Simulation Mode':{checkbox:true},
+    'Entry Price':{number:entryPrice},
+    'Stop-Loss Price':{number:stop},
+    'TP1':{number:tp1},'TP2':{number:tp2},'TP3':{number:tp3},
+    'Composite Score':{number:score},
+    'What Went Right':{rich_text:[{text:{content:(reasoning||'').slice(0,2000)}}]},
+    'Date Opened':{date:{start:today}},
+  };
+  if(regimeName)props['Market Regime at Entry']={select:{name:regimeName}};
+  if(positionPct)props['Position Size %']={number:positionPct};
+  const body=JSON.stringify({parent:{database_id:TRADE_DB},properties:props});
   return new Promise(resolve=>{
     const req=https.request({
       hostname:'api.notion.com',path:'/v1/pages',method:'POST',

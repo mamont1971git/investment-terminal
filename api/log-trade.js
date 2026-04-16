@@ -39,8 +39,8 @@ function tradeToNotion(t) {
   if (t.exitPrice)     props['Exit Price']         = { number: Number(t.exitPrice) };
   if (t.pnlPct != null) props['P&L %']            = { number: Number(t.pnlPct) };
   if (t.positionPct)   props['Position Size %']   = { number: Number(t.positionPct) };
-  if (t.dateOpened)    props['date:Date Opened:start'] = t.dateOpened;
-  if (t.dateClosed)    props['date:Date Closed:start'] = t.dateClosed;
+  if (t.dateOpened)    props['Date Opened'] = { date: { start: t.dateOpened } };
+  if (t.dateClosed)    props['Date Closed'] = { date: { start: t.dateClosed } };
   if (t.right)         props['What Went Right']   = { rich_text: [{ text: { content: t.right.slice(0,500) } }] };
   if (t.wrong)         props['What Went Wrong']   = { rich_text: [{ text: { content: t.wrong.slice(0,500) } }] };
   if (t.lesson)        props['Lesson Learned']    = { rich_text: [{ text: { content: t.lesson.slice(0,500) } }] };

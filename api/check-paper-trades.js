@@ -99,7 +99,7 @@ module.exports = async (req, res) => {
         'Auto Closed':     { checkbox:true },
         'Close Reason':    { select:{name:closeReason} },
         'Days Held':       { number:daysHeld },
-        'date:Date Closed:start': today,
+        'Date Closed':     { date:{start:today} },
       };
       await notionPatch(page.id, props, TOKEN);
       updates.push({ticker,action:'closed',reason:closeReason,entryPrice,exitPrice:currentPrice,pnlPct,daysHeld});
