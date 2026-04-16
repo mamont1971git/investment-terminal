@@ -1,14 +1,15 @@
 const https = require('https');
 
+// ── http helper ─────────────────────────────────────────────────────────────
 function get(url, headers = {}) {
   return new Promise((resolve, reject) => {
     https.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/json,text/csv,*/*',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': '*/*',
         ...headers,
       },
-      timeout: 8000,
+      timeout: 9000,
     }, res => {
       let d = '';
       res.on('data', c => d += c);
@@ -18,87 +19,166 @@ function get(url, headers = {}) {
   });
 }
 
-// Parse Stooq daily CSV  → [{date, close}]
-// Stooq format: Date,Open,High,Low,Close,Volume
-function parseCSV(csv) {
+// ── parsers ──────────────────────────────────────────────────────────────────
+function parseStooqCSV(csv) {
   return csv.trim().split('\n').slice(1)
-    .map(line => { const p = line.split(','); return { date: p[0], close: parseFloat(p[4] ?? p[1]) }; })
-    .filter(r => !isNaN(r.close) && r.close > 0);
+    .map(l => { const p = l.split(','); return { date: p[0], close: parseFloat(p[4] ?? p[1]) }; })
+    .filter(r => r.date && !isNaN(r.close) && r.close > 0);
 }
 
-// VIX → approximate Fear & Greed (used as fallback when CNN blocks us)
-// Calibrated: VIX 18 ≈ F&G 47, VIX 30 ≈ F&G 18, VIX 12 ≈ F&G 70
-function vixToFG(vix, spyAbove, spyDayPct) {
-  let base = Math.round(100 - (vix - 9) * 2.9);
-  if (spyAbove) base += 5; else base -= 5;
-  if (spyDayPct >  1.5) base += 8;
-  else if (spyDayPct > 0.5) base += 3;
-  else if (spyDayPct < -1.5) base -= 8;
-  else if (spyDayPct < -0.5) base -= 3;
-  const value = Math.max(4, Math.min(96, base));
-  const label = value >= 75 ? 'Extreme Greed' : value >= 60 ? 'Greed' :
-                value >= 45 ? 'Neutral' : value >= 25 ? 'Fear' : 'Extreme Fear';
+function parseAlphaVantageDaily(json) {
+  const ts = json['Time Series (Daily)'];
+  if (!ts) return [];
+  return Object.entries(ts)
+    .sort(([a],[b]) => a > b ? 1 : -1)
+    .map(([date, v]) => ({ date, close: parseFloat(v['4. close']) }));
+}
+
+// ── 50-day EMA ───────────────────────────────────────────────────────────────
+function calc50EMA(rows) {
+  if (rows.length < 52) return null;
+  const r = rows.slice(-120);
+  const price = r[r.length - 1].close;
+  const prev  = r[r.length - 2].close;
+  const k = 2 / 51;
+  let ema = r.slice(0, 50).reduce((s, x) => s + x.close, 0) / 50;
+  for (let i = 50; i < r.length; i++) ema = r[i].close * k + ema * (1 - k);
+  return { price: +price.toFixed(2), change: +(price-prev).toFixed(2),
+           pct: +((price-prev)/prev*100).toFixed(2), ema50: +ema.toFixed(2),
+           above: price > ema, pctAbove: +((price-ema)/ema*100).toFixed(2) };
+}
+
+// ── F&G from VIX proxy ───────────────────────────────────────────────────────
+function vixToFG(vix, spyAbove, spyPct) {
+  let v = Math.round(100 - (vix - 9) * 2.9);
+  if (spyAbove) v += 4; else v -= 4;
+  if (spyPct > 1.5) v += 8; else if (spyPct < -1.5) v -= 8;
+  const value = Math.max(4, Math.min(96, v));
+  const label = value>=75?'Extreme Greed':value>=60?'Greed':value>=45?'Neutral':value>=25?'Fear':'Extreme Fear';
   return { value, label, source: 'vix-proxy' };
 }
 
+// ── main handler ─────────────────────────────────────────────────────────────
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
 
-  const errors = {};
+  const ALPHA_KEY = process.env.ALPHA_VANTAGE_KEY || 'demo';
+  const notes = [];
   let vix = null, spy = null, fg = null;
 
-  // ── VIX via Stooq (no bot detection, reliable) ──────────────────────────
+  // ── VIX: Stooq (reliable, no bot block) ──────────────────────────────────
   try {
     const r = await get('https://stooq.com/q/d/l/?s=%5EVIX&i=d');
-    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
-    const rows = parseCSV(r.body);
-    if (rows.length < 2) throw new Error('Not enough rows: ' + rows.length);
-    const v = rows[rows.length - 1].close;
-    const p = rows[rows.length - 2].close;
-    vix = { value: v, change: +(v - p).toFixed(2), pct: +((v - p) / p * 100).toFixed(2) };
-  } catch(e) { errors.vix = e.message; }
+    const rows = parseStooqCSV(r.body);
+    if (rows.length < 2) throw new Error(`only ${rows.length} rows`);
+    const v = rows[rows.length-1].close, p = rows[rows.length-2].close;
+    vix = { value: +v.toFixed(2), change: +(v-p).toFixed(2), pct: +((v-p)/p*100).toFixed(2) };
+  } catch(e) {
+    notes.push('VIX/Stooq failed: ' + e.message);
+    // Fallback: Alpha Vantage
+    try {
+      const r = await get(`https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=VIX&apikey=${ALPHA_KEY}`);
+      const rows = parseAlphaVantageDaily(JSON.parse(r.body));
+      if (rows.length < 2) throw new Error('no rows');
+      const v = rows[rows.length-1].close, p = rows[rows.length-2].close;
+      vix = { value: +v.toFixed(2), change: +(v-p).toFixed(2), pct: +((v-p)/p*100).toFixed(2), source: 'alphavantage' };
+    } catch(e2) { notes.push('VIX/AlphaVantage also failed: ' + e2.message); }
+  }
 
-  // ── SPY via Stooq (120 days for 50-day EMA) ──────────────────────────────
+  // ── SPY: try 3 sources ───────────────────────────────────────────────────
+  // Source 1: Stooq historical (works during market hours)
   try {
     const r = await get('https://stooq.com/q/d/l/?s=spy.us&i=d');
-    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
-    const rows = parseCSV(r.body).slice(-120);
-    if (rows.length < 52) throw new Error('Not enough rows: ' + rows.length);
-    const price = rows[rows.length - 1].close;
-    const prev  = rows[rows.length - 2].close;
-    const k = 2 / 51;
-    let ema = rows.slice(0, 50).reduce((s, r) => s + r.close, 0) / 50;
-    for (let i = 50; i < rows.length; i++) ema = rows[i].close * k + ema * (1 - k);
-    spy = {
-      price: +price.toFixed(2),
-      change: +(price - prev).toFixed(2),
-      pct: +((price - prev) / prev * 100).toFixed(2),
-      ema50: +ema.toFixed(2),
-      above: price > ema,
-      pctAbove: +((price - ema) / ema * 100).toFixed(2),
-    };
-  } catch(e) { errors.spy = e.message; }
+    const rows = parseStooqCSV(r.body);
+    if (rows.length < 52) throw new Error(`only ${rows.length} rows`);
+    spy = calc50EMA(rows);
+    if (!spy) throw new Error('EMA calc failed');
+  } catch(e) {
+    notes.push('SPY/Stooq: ' + e.message);
 
-  // ── Fear & Greed: try CNN first, fall back to VIX proxy ─────────────────
+    // Source 2: Alpha Vantage (works any time, 25 free calls/day)
+    try {
+      const r = await get(`https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=SPY&outputsize=compact&apikey=${ALPHA_KEY}`);
+      const d = JSON.parse(r.body);
+      if (d.Note || d.Information) throw new Error('Alpha Vantage rate limit: ' + (d.Note || d.Information).slice(0,60));
+      const rows = parseAlphaVantageDaily(d);
+      if (rows.length < 52) throw new Error(`only ${rows.length} rows`);
+      spy = calc50EMA(rows);
+      if (spy) spy.source = 'alphavantage';
+      else throw new Error('EMA calc failed');
+    } catch(e2) {
+      notes.push('SPY/AlphaVantage: ' + e2.message);
+
+      // Source 3: Stooq current quote only (price without EMA)
+      try {
+        const r = await get('https://stooq.com/q/l/?s=spy.us&f=sd2ohlcv&h&e=csv');
+        const rows = parseStooqCSV(r.body);
+        if (!rows.length) throw new Error('empty');
+        const price = rows[rows.length-1].close;
+        // Approximate: SPY above 50 EMA if VIX < 25 (reasonable proxy)
+        const aboveEMA = vix ? vix.value < 25 : true;
+        spy = { price: +price.toFixed(2), change: null, pct: null,
+                ema50: null, above: aboveEMA, pctAbove: null, source: 'quote-only' };
+        notes.push('SPY: using current quote only, EMA approximated from VIX');
+      } catch(e3) {
+        notes.push('SPY/quote: ' + e3.message);
+        // Final fallback: derive from VIX
+        if (vix) {
+          spy = { price: null, above: vix.value < 25, pctAbove: null, source: 'vix-inferred' };
+          notes.push('SPY: inferred from VIX (above 50EMA = VIX < 25)');
+        }
+      }
+    }
+  }
+
+  // ── Fear & Greed ─────────────────────────────────────────────────────────
+  // Try CNN mobile UA first
   try {
-    // Mobile UA often bypasses bot detection on CNN
     const r = await get('https://production.dataviz.cnn.io/index/fearandgreed/graphdata', {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15',
       'Referer': 'https://www.cnn.com/markets/fear-and-greed',
       'Origin': 'https://www.cnn.com',
-      'Accept': 'application/json',
     });
     const d = JSON.parse(r.body);
-    const obj = d?.fear_and_greed;
-    if (obj?.score == null) throw new Error('No score in response');
-    fg = { value: Math.round(Number(obj.score)), label: obj.rating?.replace(/_/g, ' '), source: 'cnn' };
+    const s = d?.fear_and_greed?.score;
+    if (s == null) throw new Error('no score');
+    fg = { value: Math.round(Number(s)), label: d.fear_and_greed.rating?.replace(/_/g,' '), source: 'cnn' };
   } catch(e) {
-    errors.fg = 'CNN blocked (' + e.message + ') — using VIX proxy';
-    // Calculate from VIX if available
+    notes.push('F&G/CNN: ' + e.message + ' — using VIX proxy');
     if (vix) fg = vixToFG(vix.value, spy?.above ?? true, spy?.pct ?? 0);
   }
 
-  res.json({ vix, spy, fg, ts: new Date().toISOString(), errors });
+  // Auto-log signal to Notion (non-blocking, silent fail)
+  logSignalToNotion(vix, spy, fg, process.env.NOTION_TOKEN).catch(() => {});
+
+  res.json({ vix, spy, fg, ts: new Date().toISOString(), notes });
 };
+
+// ── auto-log signal to Notion (if token available) ───────────────────────────
+async function logSignalToNotion(vix, spy, fg, token) {
+  if (!token) return;
+  const SIGNAL_DB = 'c4a2f27b5636414d8930065adb36b12e';
+  const regime = !vix ? 'Neutral' :
+    vix.value > 30 ? 'Caution Zone' :
+    (vix.value < 18 && spy?.above) ? 'Breakout Zone' : 'Mean Reversion Zone';
+  const body = JSON.stringify({
+    parent: { database_id: SIGNAL_DB },
+    properties: {
+      'Date':              { title: [{ text: { content: new Date().toISOString().split('T')[0] + ' — ' + new Date().toLocaleTimeString('en-US',{timeZone:'America/New_York'}) + ' ET' } }] },
+      'Market Regime':     { select: { name: regime } },
+      'VIX Level':         vix  ? { number: vix.value }  : { number: null },
+      'Fear & Greed Index':fg   ? { number: fg.value }   : { number: null },
+      'S&P vs 50 EMA':     spy  ? { select: { name: spy.above ? 'Solidly Above' : 'Below' } } : undefined,
+      'Alert Sent':        { checkbox: false },
+    },
+  });
+  return new Promise(resolve => {
+    const req = https.request({
+      hostname: 'api.notion.com', path: '/v1/pages', method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) },
+    }, res => { res.resume(); resolve(); });
+    req.on('error', resolve); // silent fail
+    req.write(body); req.end();
+  });
+}

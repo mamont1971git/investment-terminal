@@ -31,21 +31,27 @@ const fmt=(n,d=2)=>n==null?'—':Number(n).toFixed(d);
 const load=(k,fb)=>{try{return JSON.parse(localStorage.getItem(k))??fb}catch{return fb}};
 const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
-// ─── error logging ────────────────────────────────────────────────────────
+// ─── error logging — saves locally + auto-pushes to Notion via API ──────────
 function logError(type,message,context={}){
   const entry={
     id:Date.now(),
     ts:new Date().toISOString(),
     type,
     message:String(message),
-    context,
-    userAgent:navigator.userAgent.slice(0,80),
+    context:JSON.stringify(context),
     protocol:window.location.protocol,
   };
   const existing=load('inv_errors',[]);
-  const updated=[entry,...existing].slice(0,100); // keep last 100 errors
+  const updated=[entry,...existing].slice(0,100);
   save('inv_errors',updated);
   console.error('[InvTerminal]',type,message,context);
+  // Auto-push to Notion via serverless API (silent, non-blocking)
+  if(window.location.protocol!=='file:'){
+    fetch('/api/log-error',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify([{type,message:String(message),context:JSON.stringify(context),
+        ts:entry.ts,protocol:window.location.protocol}])
+    }).catch(()=>{});
+  }
   return entry;
 }
 
@@ -649,6 +655,11 @@ function Journal({onBack}){
       ?((Number(form.exitPrice)-Number(form.entryPrice))/Number(form.entryPrice)*100):null;
     const t={...form,id:Date.now(),ticker:form.ticker.toUpperCase(),pnlPct};
     const u=[t,...trades];setTrades(u);save('inv_trades',u);setShowForm(false);
+    // Auto-sync to Notion Trade Journal (silent, non-blocking)
+    if(window.location.protocol!=='file:'){
+      fetch('/api/log-trade',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(t)}).catch(()=>{});
+    }
   };
   const del=id=>{if(!confirm('Delete?'))return;const u=trades.filter(t=>t.id!==id);setTrades(u);save('inv_trades',u);};
 
