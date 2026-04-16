@@ -110,23 +110,26 @@ module.exports = async (req, res) => {
     } catch(e2) {
       notes.push('SPY/AlphaVantage: ' + e2.message);
 
-      // Source 3: Stooq current quote only (price without EMA)
+      // Source 3: Alpha Vantage GLOBAL_QUOTE (current price, no rate limit issues)
       try {
-        const r = await get('https://stooq.com/q/l/?s=spy.us&f=sd2ohlcv&h&e=csv');
-        const rows = parseStooqCSV(r.body);
-        if (!rows.length) throw new Error('empty');
-        const price = rows[rows.length-1].close;
-        // Approximate: SPY above 50 EMA if VIX < 25 (reasonable proxy)
-        const aboveEMA = vix ? vix.value < 25 : true;
-        spy = { price: +price.toFixed(2), change: null, pct: null,
-                ema50: null, above: aboveEMA, pctAbove: null, source: 'quote-only' };
-        notes.push('SPY: using current quote only, EMA approximated from VIX');
+        const r = await get(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey=${ALPHA_KEY}`);
+        const d = JSON.parse(r.body);
+        const q = d['Global Quote'];
+        if (!q || !q['05. price']) throw new Error('No quote data: ' + JSON.stringify(d).slice(0,100));
+        const price = parseFloat(q['05. price']);
+        const prev  = parseFloat(q['08. previous close'] || q['05. price']);
+        // Approximate above/below 50 EMA from VIX level
+        const aboveEMA = vix ? vix.value < 22 : true;
+        spy = { price: +price.toFixed(2), change: +(price-prev).toFixed(2),
+                pct: +((price-prev)/prev*100).toFixed(2),
+                ema50: null, above: aboveEMA, pctAbove: null, source: 'alpha-quote' };
+        notes.push('SPY: current price from Alpha Vantage, EMA approximated from VIX');
       } catch(e3) {
-        notes.push('SPY/quote: ' + e3.message);
-        // Final fallback: derive from VIX
+        notes.push('SPY/alpha-quote: ' + e3.message);
+        // Final fallback: derive entirely from VIX
         if (vix) {
-          spy = { price: null, above: vix.value < 25, pctAbove: null, source: 'vix-inferred' };
-          notes.push('SPY: inferred from VIX (above 50EMA = VIX < 25)');
+          spy = { price: null, above: vix.value < 22, pctAbove: null, source: 'vix-inferred' };
+          notes.push('SPY: fully inferred from VIX');
         }
       }
     }
