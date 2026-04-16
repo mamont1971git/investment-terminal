@@ -2,6 +2,8 @@
 // Returns all open paper trades from Notion with live price + P&L
 // Also returns closed trades for portfolio stats
 const https = require('https');
+let computeAll;
+try { computeAll = require('./lib/indicators').computeAll; } catch { computeAll = null; }
 
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 
@@ -20,6 +22,31 @@ function notionQuery(filter, sorts, token, pageSize=50) {
     });
     req.on('error', () => resolve({ results: [] }));
     req.write(body); req.end();
+  });
+}
+
+function fetchOHLCV(ticker, apiKey) {
+  return new Promise(resolve => {
+    https.get(
+      `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${apiKey}`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 },
+      res => {
+        let d = ''; res.on('data', c => d += c);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(d);
+            if (json['Note'] || json['Information']) { resolve(null); return; }
+            const ts = json['Time Series (Daily)'];
+            if (!ts) { resolve(null); return; }
+            resolve(Object.entries(ts).map(([date, v]) => ({
+              date, open: parseFloat(v['1. open']), high: parseFloat(v['2. high']),
+              low: parseFloat(v['3. low']), close: parseFloat(v['4. close']),
+              volume: parseInt(v['5. volume']),
+            })).reverse());
+          } catch { resolve(null); }
+        });
+      }
+    ).on('error', () => resolve(null)).on('timeout', function() { this.destroy(); resolve(null); });
   });
 }
 
@@ -112,18 +139,28 @@ module.exports = async (req, res) => {
   const uniqueTickers = [...new Set(openTrades.map(t => t.ticker).filter(Boolean))];
   const prices = {};
 
-  if (ALPHA && uniqueTickers.length > 0) {
-    // Fetch up to 5 tickers (Alpha Vantage free = 25/day, be conservative)
+  // Fetch OHLCV for TA indicators (only first 3 to conserve API calls)
+  const taData = {};
+  if (ALPHA && computeAll && uniqueTickers.length > 0) {
+    for (const ticker of uniqueTickers.slice(0, 3)) {
+      try {
+        const bars = await fetchOHLCV(ticker, ALPHA);
+        if (bars && bars.length >= 30) taData[ticker] = computeAll(bars);
+      } catch {}
+      if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 400));
+    }
+  } else if (ALPHA && uniqueTickers.length > 0) {
+    // Fallback: just fetch prices
     for (const ticker of uniqueTickers.slice(0, 5)) {
       prices[ticker] = await getPrice(ticker, ALPHA);
-      // small delay to avoid rate limiting
       if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 300));
     }
   }
 
-  // Enrich open trades with live data
+  // Enrich open trades with live data + TA
   const positions = openTrades.map(t => {
-    const currentPrice = prices[t.ticker] || null;
+    const ta = taData[t.ticker];
+    const currentPrice = ta?.price || prices[t.ticker] || null;
     const livePnlPct = currentPrice && t.entryPrice
       ? +((currentPrice - t.entryPrice) / t.entryPrice * 100).toFixed(2)
       : null;
@@ -142,6 +179,24 @@ module.exports = async (req, res) => {
       recommendation = 'TIGHTEN_STOP'; urgency = 'watch';
     }
 
+    // Extract key TA indicators for the dashboard
+    const indicators = ta ? {
+      rsi2: ta.rsi2,
+      rsi14: ta.rsi14,
+      macd: ta.macd ? { histogram: ta.macd.histogram, crossover: ta.macd.crossover } : null,
+      bollingerPctB: ta.bollingerBands?.pctB,
+      atr: ta.atr ? { value: ta.atr.atr, pct: ta.atr.atrPct } : null,
+      zScore: ta.zScore?.zScore,
+      zInterpretation: ta.zScore?.interpretation,
+      obv: ta.obv ? { trend: ta.obv.trend, divergence: ta.obv.divergence } : null,
+      stochastic: ta.stochastic ? { k: ta.stochastic.k, signal: ta.stochastic.signal } : null,
+      volumeRatio: ta.volume?.ratio,
+      emaAlignment: ta.emaAlignment?.alignment,
+      fibSupport: ta.fibonacci?.nearestSupport?.price,
+      fibResistance: ta.fibonacci?.nearestResistance?.price,
+      signals: ta._summary || [],
+    } : null;
+
     return {
       ...t,
       currentPrice,
@@ -149,6 +204,7 @@ module.exports = async (req, res) => {
       daysHeld,
       recommendation,
       urgency,
+      indicators,
     };
   });
 
