@@ -332,6 +332,153 @@ function PositionCard({t,regime,live}){
   );
 }
 
+// ─── TRADING MODE + ORDER DRAFTS ─────────────────────────────────────────
+const MODES = [
+  {id:'dry-run', label:'🧪 Dry Run',    desc:'Paper trading — no real money'},
+  {id:'ibkr',    label:'🏦 IBKR',       desc:'Coming soon — see Integration Roadmap'},
+];
+
+function TradingModeSelector(){
+  const [mode,setMode]=useState(()=>load('tradingMode','dry-run'));
+  const [open,setOpen]=useState(false);
+  const current=MODES.find(m=>m.id===mode)||MODES[0];
+  const onChange=(id)=>{ setMode(id); save('tradingMode',id); setOpen(false); };
+  return(
+    <div className="relative">
+      <button onClick={()=>setOpen(o=>!o)}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold"
+        style={{background:'#0f1828',border:'1px solid #1e2d4a',color:'#e2e8f0'}}>
+        <span>{current.label}</span>
+        <span className="text-gray-500">▾</span>
+      </button>
+      {open&&(
+        <div className="absolute right-0 top-9 rounded-xl overflow-hidden z-30 w-52"
+          style={{background:'#0d1120',border:'1px solid #1e2d4a',boxShadow:'0 8px 32px #00000066'}}>
+          {MODES.map(m=>(
+            <button key={m.id} onClick={()=>onChange(m.id)}
+              className="w-full text-left px-4 py-3 text-xs hover:opacity-80 transition"
+              style={{background:m.id===mode?'#1e2d4a':'transparent',borderBottom:'1px solid #1e2d4a'}}>
+              <div className="font-bold text-gray-200">{m.label}</div>
+              <div className="text-gray-500 mt-0.5">{m.desc}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrderDrafts(){
+  const [drafts,setDrafts]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [acting,setActing]=useState(null);
+  const mode=load('tradingMode','dry-run');
+
+  const fetchDrafts=useCallback(async()=>{
+    if(window.location.protocol==='file:'){setLoading(false);return;}
+    try{
+      const r=await fetch('/api/get-drafts');
+      const d=await r.json();
+      setDrafts(d.drafts||[]);
+    }catch{}finally{setLoading(false);}
+  },[]);
+
+  useEffect(()=>{fetchDrafts();},[]);
+  // Poll every 30s if drafts exist
+  useEffect(()=>{
+    if(!drafts.length)return;
+    const t=setInterval(fetchDrafts,30000);
+    return()=>clearInterval(t);
+  },[drafts.length,fetchDrafts]);
+
+  const act=async(notionId,action)=>{
+    setActing(notionId+action);
+    try{
+      const r=await fetch('/api/confirm-draft',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({notionId,action,mode}),
+      });
+      const d=await r.json();
+      if(d.action==='ibkr-not-connected'){
+        alert('IBKR not yet connected.\n\n'+d.message+'\n\nSwitching to Dry Run.');
+        save('tradingMode','dry-run');
+      }
+      await fetchDrafts();
+    }catch(e){alert('Error: '+e.message);}
+    finally{setActing(null);}
+  };
+
+  if(loading||!drafts.length)return null;
+
+  return(
+    <Card style={{border:'2px solid #f59e0b44'}}>
+      <div className="px-4 py-3 flex items-center justify-between"
+        style={{borderBottom:'1px solid #0f1828',background:'#1a1200'}}>
+        <div className="flex items-center gap-2">
+          <span className="text-amber-400 text-lg">⏳</span>
+          <span className="text-xs font-bold text-amber-300 uppercase tracking-wider">
+            {drafts.length} Order Draft{drafts.length>1?'s':''} — Awaiting Your Decision
+          </span>
+        </div>
+        <TradingModeSelector/>
+      </div>
+      {drafts.map(d=>{
+        const isActing=acting&&acting.startsWith(d.id);
+        const modeLabel=mode==='dry-run'?'Paper Trade':'IBKR Order';
+        return(
+          <div key={d.id} className="px-4 py-4"style={{borderTop:'1px solid #0f1828',background:'#0e0c00'}}>
+            {/* Header row */}
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-black text-xl text-white">{d.ticker}</span>
+                  <span className="text-xs text-gray-500">{d.strategy}</span>
+                  {d.score&&<Pill text={`Score ${d.score}`}
+                    color={d.score>=80?'#22c55e':d.score>=65?'#84cc16':'#f59e0b'}/>}
+                  {d.regime&&<Pill text={d.regime} color="#6366f1"/>}
+                </div>
+                {d.reasoning&&<div className="text-xs text-gray-400 mt-1 leading-relaxed">{d.reasoning}</div>}
+              </div>
+            </div>
+            {/* Price grid */}
+            <div className="grid grid-cols-4 gap-2 mb-4">
+              {[
+                {l:'Entry',v:`$${d.entryPrice}`,bg:'#0f1828',c:'#e2e8f0'},
+                {l:'Stop –7%',v:`$${d.stop}`,bg:'#1a0c0c',c:'#f87171'},
+                {l:'TP1 +8%',v:`$${d.tp1}`,bg:'#0a1a0d',c:'#4ade80'},
+                {l:'TP2 +15%',v:`$${d.tp2}`,bg:'#0a1a0d',c:'#22c55e'},
+              ].map((b,i)=>(
+                <div key={i} className="rounded-xl p-2 text-center"style={{background:b.bg}}>
+                  <div className="text-xs text-gray-600">{b.l}</div>
+                  <div className="font-bold text-sm mt-0.5"style={{color:b.c}}>{b.v}</div>
+                </div>
+              ))}
+            </div>
+            {/* Action buttons */}
+            <div className="flex gap-3">
+              <button onClick={()=>act(d.id,'confirm')} disabled={!!isActing}
+                className="flex-1 py-3 rounded-2xl font-bold text-sm transition-all"
+                style={{background:isActing==='confirm'?'#14532d':'#22c55e',color:'#000',
+                  opacity:isActing?0.7:1}}>
+                ✅ Confirm — {modeLabel}
+              </button>
+              <button onClick={()=>act(d.id,'reject')} disabled={!!isActing}
+                className="px-5 py-3 rounded-2xl font-bold text-sm"
+                style={{background:'#1a0c0c',color:'#f87171',border:'1px solid #7f1d1d',
+                  opacity:isActing?0.7:1}}>
+                ❌ Reject
+              </button>
+            </div>
+            <div className="text-xs text-center mt-2"style={{color:'#4b5563'}}>
+              Mode: <span style={{color:mode==='dry-run'?'#818cf8':'#22c55e'}}>{mode==='dry-run'?'Dry Run (paper trade)':'IBKR (real order)'}</span>
+            </div>
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
+
 // ─── QUICK COMMANDS ──────────────────────────────────────────────────────
 function QuickCommands(){
   const [copied,setCopied]=useState(null);
@@ -453,7 +600,8 @@ function DailyBrief(){
             <span className="font-black text-white tracking-tight">📈 Investment Terminal</span>
             <span className="text-xs text-gray-700 ml-2">Daniel</span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <TradingModeSelector/>
             <span className="text-xs font-semibold"style={{color:ms.c}}>● {ms.l}</span>
             <button onClick={refresh} disabled={status==='loading'}
               className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl"
@@ -558,6 +706,9 @@ function DailyBrief(){
             </div>
           </Card>
         )}
+
+        {/* ── order drafts ── */}
+        <OrderDrafts/>
 
         {/* ── open positions ── */}
         {openTrades.length>0&&(
