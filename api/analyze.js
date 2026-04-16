@@ -179,43 +179,52 @@ INSTRUCTIONS FOR YOUR RESPONSE:
 Respond with a JSON object in this exact structure (no markdown, pure JSON):
 {
   "regime": {
-    "name": "...",
-    "headline": "...",
-    "why": "...",
-    "action": "...",
-    "vix": ...,
-    "fg": ...,
+    "name": "MEAN REVERSION ZONE|BREAKOUT ZONE|CAUTION ZONE|EXTREME FEAR",
+    "headline": "one-line summary",
+    "why": "2-3 sentences explaining current conditions",
+    "action": "specific recommended action",
+    "vix": number,
+    "fg": number_or_null,
     "spyAbove": true/false
   },
   "positions": [
     {
-      "ticker": "...",
+      "ticker": "XXXX",
       "recommendation": "HOLD|TAKE_PROFIT|EXIT_NOW|TIGHTEN_STOP",
-      "currentPrice": ...,
-      "pnlPct": ...,
-      "reasoning": "...",
+      "currentPrice": number_or_null,
+      "pnlPct": number_or_null,
+      "reasoning": "2-3 sentences: why this action, what changed, what to watch",
       "urgency": "urgent|watch|ok"
     }
   ],
   "opportunities": [
     {
-      "ticker": "...",
-      "score": ...,
-      "action": "BUY|WATCHLIST|SKIP",
-      "strategy": "...",
-      "reasoning": "...",
-      "entryPrice": ...,
-      "stop": ...,
-      "tp1": ...,
-      "tp2": ...,
-      "positionPct": ...
+      "ticker": "XXXX",
+      "score": number_0_to_100,
+      "action": "BUY|WATCHLIST",
+      "strategy": "Mean Reversion|Breakout Momentum|Earnings Catalyst",
+      "reasoning": "3-4 sentences explaining the setup and why now",
+      "entryPrice": number,
+      "stop": number,
+      "tp1": number,
+      "tp2": number,
+      "positionPct": number,
+      "waitingFor": "only for WATCHLIST — what needs to improve"
     }
   ],
-  "insights": "...",
+  "insights": "1-2 key portfolio observations from trade history",
   "stance": "Aggressive|Moderate|Defensive",
-  "recommendedCash": "...",
-  "nextCheckIn": "..."
-}`;
+  "recommendedCash": "XX%",
+  "nextCheckIn": "time/date"
+}
+
+CRITICAL RULES:
+- For "full analysis" or "run investment analysis": ONLY return BUY (score≥65) and WATCHLIST (score 50-64) in opportunities. Do NOT include SKIP entries — they waste space. Focus on actionable items only.
+- For "score" commands on a specific ticker: include the full verdict even if SKIP.
+- For "portfolio review": focus entirely on positions array with detailed actions. Opportunities array can be empty.
+- Every BUY must have entryPrice, stop (entry×0.93), tp1 (entry×1.08), tp2 (entry×1.15), positionPct.
+- Every position must have a specific recommendation and reasoning. Never say "monitor" — say exactly what to do.
+- Be specific with price levels and percentages. The user needs exact numbers to act on.`;
 
   // Load system prompt from skill
   const fs = require('fs');

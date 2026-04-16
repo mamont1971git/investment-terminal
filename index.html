@@ -390,6 +390,12 @@ function OrderDrafts(){
     const t=setInterval(fetchDrafts,30000);
     return()=>clearInterval(t);
   },[drafts.length,fetchDrafts]);
+  // Listen for refreshDrafts event (fired when a BUY draft is created from analysis)
+  useEffect(()=>{
+    const h=()=>{setTimeout(fetchDrafts,1000);};
+    window.addEventListener('refreshDrafts',h);
+    return()=>window.removeEventListener('refreshDrafts',h);
+  },[fetchDrafts]);
 
   const act=async(notionId,action)=>{
     setActing(notionId+action);
@@ -476,6 +482,72 @@ function OrderDrafts(){
         );
       })}
     </Card>
+  );
+}
+
+// ─── BUY OPPORTUNITY CARD — with Create Draft button ─────────────────────
+function BuyOpportunityCard({o,regime,onDraftCreated}){
+  const [creating,setCreating]=useState(false);
+  const [drafted,setDrafted]=useState(false);
+
+  const createDraft=async()=>{
+    if(window.location.protocol==='file:')return;
+    setCreating(true);
+    try{
+      const r=await fetch('/api/create-draft',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          ticker:o.ticker,strategy:o.strategy||'Mean Reversion',
+          score:o.score,reasoning:o.reasoning,regime:regime||'',
+          positionPct:o.positionPct,entryPrice:o.entryPrice
+        }),
+      });
+      const d=await r.json();
+      if(d.ok){setDrafted(true);onDraftCreated&&onDraftCreated();}
+      else{alert('Failed to create draft: '+(d.error||'unknown error'));}
+    }catch(e){alert('Error: '+e.message);}
+    finally{setCreating(false);}
+  };
+
+  return(
+    <div className="px-4 py-3"style={{background:'#0a0e1a',borderTop:'1px solid #0f1828'}}>
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <span className="font-black text-white text-lg">{o.ticker}</span>
+        <Pill text="BUY" color="#22c55e"/>
+        {o.score&&<Pill text={`${o.score}/100`} color={o.score>=80?'#22c55e':o.score>=65?'#84cc16':'#f59e0b'}/>}
+        <span className="text-xs text-gray-500">{o.strategy}</span>
+      </div>
+      <div className="text-xs text-gray-400 leading-relaxed mb-2">{o.reasoning}</div>
+      {o.entryPrice&&(
+        <div className="grid grid-cols-4 gap-2 mb-3">
+          {[
+            {l:'Entry',v:`$${o.entryPrice}`,bg:'#0f1828',c:'#e2e8f0'},
+            {l:'Stop –7%',v:`$${o.stop}`,bg:'#1a0c0c',c:'#f87171'},
+            {l:'TP1 +8%',v:`$${o.tp1}`,bg:'#0a1a0d',c:'#4ade80'},
+            {l:'TP2 +15%',v:`$${o.tp2}`,bg:'#0a1a0d',c:'#22c55e'},
+          ].map((b,i)=>(
+            <div key={i} className="rounded-xl p-2 text-center"style={{background:b.bg}}>
+              <div className="text-xs text-gray-600">{b.l}</div>
+              <div className="font-bold text-sm mt-0.5"style={{color:b.c}}>{b.v}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* Create Draft button */}
+      {drafted?(
+        <div className="flex items-center gap-2 py-2 px-3 rounded-xl text-xs font-bold"
+          style={{background:'#0f1a0f',color:'#22c55e',border:'1px solid #22c55e44'}}>
+          ✅ Draft created — confirm or reject in Order Drafts above
+        </div>
+      ):(
+        <button onClick={createDraft} disabled={creating}
+          className="w-full py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
+          style={{background:creating?'#14532d':'#22c55e',color:'#000',opacity:creating?0.7:1}}>
+          {creating?<><span className="inline-block w-3 h-3 rounded-full border-2 spin mr-2"style={{borderColor:'#000',borderTopColor:'transparent'}}/>Creating Draft…</>:'➕ Create Order Draft'}
+        </button>
+      )}
+      {o.positionPct&&<div className="text-xs text-gray-600 text-center mt-1">Position: {o.positionPct}% of portfolio</div>}
+    </div>
   );
 }
 
@@ -571,60 +643,94 @@ function AnalysisPanel(){
             </div>
           )}
 
-          {/* positions */}
+          {/* positions — interactive with action buttons */}
           {result.positions?.length>0&&(
             <div style={{borderBottom:'1px solid #1e2d4a'}}>
               <div className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-gray-500"
                 style={{background:'#0f1828'}}>Open Positions</div>
               {result.positions.map((p,i)=>{
                 const c=p.recommendation==='HOLD'?'#22c55e':p.recommendation==='EXIT_NOW'?'#ef4444':'#f59e0b';
+                const actions=[];
+                if(p.recommendation==='EXIT_NOW') actions.push({label:'🚨 Exit Now',color:'#ef4444',bg:'#1a0808'});
+                if(p.recommendation==='TAKE_PROFIT') actions.push({label:'💰 Take Profit',color:'#22c55e',bg:'#0a1a0d'});
+                if(p.recommendation==='TIGHTEN_STOP'||p.recommendation==='HOLD')
+                  actions.push({label:'🔒 Tighten Stop',color:'#f59e0b',bg:'#1a1200'});
+                if(p.recommendation==='HOLD') actions.push({label:'✅ Hold',color:'#22c55e',bg:'#0a1a0d'});
                 return(
                   <div key={i} className="px-4 py-3"style={{background:'#0a0e1a',borderTop:'1px solid #0f1828'}}>
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-black text-white">{p.ticker}</span>
-                      <Pill text={p.recommendation.replace('_',' ')} color={c}/>
-                      {p.pnlPct!=null&&<span className="text-xs font-bold"style={{color:p.pnlPct>0?'#22c55e':'#ef4444'}}>{p.pnlPct>0?'+':''}{p.pnlPct?.toFixed(1)}%</span>}
+                      <Pill text={p.recommendation.replace(/_/g,' ')} color={c}/>
+                      {p.pnlPct!=null&&<span className="text-xs font-bold"style={{color:p.pnlPct>0?'#22c55e':'#ef4444'}}>{p.pnlPct>0?'+':''}{fmt(p.pnlPct,1)}%</span>}
+                      {p.currentPrice&&<span className="text-xs text-gray-500">~${fmt(p.currentPrice,2)}</span>}
                     </div>
-                    <div className="text-xs text-gray-400 leading-relaxed">{p.reasoning}</div>
+                    <div className="text-xs text-gray-400 leading-relaxed mb-3">{p.reasoning}</div>
+                    {/* interactive action buttons */}
+                    <div className="flex gap-2 flex-wrap">
+                      {actions.map((a,j)=>(
+                        <button key={j} onClick={()=>{
+                          const msg=`${a.label.replace(/[^\w\s]/g,'')} — ${p.ticker}: ${p.reasoning}`;
+                          navigator.clipboard.writeText(msg).catch(()=>{});
+                          alert(`${a.label} noted for ${p.ticker}.\n\nAction: ${p.reasoning}\n\nCopied to clipboard — paste into your broker.`);
+                        }}
+                          className="flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold transition-all hover:opacity-80"
+                          style={{background:a.bg,color:a.color,border:`1px solid ${a.color}44`}}>
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 );
               })}
             </div>
           )}
 
-          {/* opportunities */}
-          {result.opportunities?.length>0&&(
-            <div style={{borderBottom:'1px solid #1e2d4a'}}>
-              <div className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-gray-500"
-                style={{background:'#0f1828'}}>Opportunities</div>
-              {result.opportunities.map((o,i)=>{
-                const c=o.action==='BUY'?'#22c55e':o.action==='WATCHLIST'?'#f59e0b':'#ef4444';
-                return(
-                  <div key={i} className="px-4 py-3"style={{background:'#0a0e1a',borderTop:'1px solid #0f1828'}}>
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span className="font-black text-white">{o.ticker}</span>
-                      <Pill text={o.action} color={c}/>
-                      {o.score&&<Pill text={`${o.score}/100`} color={o.score>=80?'#22c55e':o.score>=65?'#84cc16':'#f59e0b'}/>}
-                      <span className="text-xs text-gray-500">{o.strategy}</span>
-                    </div>
-                    <div className="text-xs text-gray-400 leading-relaxed mb-2">{o.reasoning}</div>
-                    {o.action==='BUY'&&o.entryPrice&&(
-                      <div className="flex gap-3 text-xs">
-                        <span className="text-gray-500">Entry: <span className="text-gray-200">${o.entryPrice}</span></span>
-                        <span className="text-red-400">Stop: ${o.stop}</span>
-                        <span className="text-green-400">TP1: ${o.tp1}</span>
+          {/* opportunities — only BUY + WATCHLIST (SKIPs filtered out for Full Analysis) */}
+          {(()=>{
+            const opps=(result.opportunities||[]).filter(o=>o.action!=='SKIP');
+            const buys=opps.filter(o=>o.action==='BUY');
+            const watches=opps.filter(o=>o.action==='WATCHLIST');
+            if(!opps.length)return null;
+            return(
+              <div style={{borderBottom:'1px solid #1e2d4a'}}>
+                {buys.length>0&&(
+                  <>
+                    <div className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-green-500"
+                      style={{background:'#0f1828'}}>BUY Opportunities</div>
+                    {buys.map((o,i)=>(
+                      <BuyOpportunityCard key={i} o={o} regime={result.regime?.name} onDraftCreated={()=>{
+                        /* refresh order drafts panel */
+                        window.dispatchEvent(new Event('refreshDrafts'));
+                      }}/>
+                    ))}
+                  </>
+                )}
+                {watches.length>0&&(
+                  <>
+                    <div className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-500"
+                      style={{background:'#0f1828'}}>Watchlist</div>
+                    {watches.map((o,i)=>(
+                      <div key={i} className="px-4 py-3"style={{background:'#0a0e1a',borderTop:'1px solid #0f1828'}}>
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="font-black text-white">{o.ticker}</span>
+                          <Pill text="WATCH" color="#f59e0b"/>
+                          {o.score&&<Pill text={`${o.score}/100`} color="#f59e0b"/>}
+                          <span className="text-xs text-gray-500">{o.strategy}</span>
+                        </div>
+                        <div className="text-xs text-gray-400 leading-relaxed">{o.reasoning}</div>
+                        {o.waitingFor&&<div className="text-xs text-amber-400 mt-1">Waiting for: {o.waitingFor}</div>}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                    ))}
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
-          {/* drafts created */}
+          {/* drafts created (by API auto-create) */}
           {result.draftsCreated?.length>0&&(
             <div className="px-4 py-3 text-xs"style={{background:'#0f1a0f',borderBottom:'1px solid #1e2d4a'}}>
-              <span className="text-green-400 font-bold">✅ {result.draftsCreated.length} Order Draft{result.draftsCreated.length>1?'s':''} created</span>
+              <span className="text-green-400 font-bold">✅ {result.draftsCreated.length} Order Draft{result.draftsCreated.length>1?'s':''} auto-created</span>
               <span className="text-gray-500 ml-2">— scroll up to confirm or reject</span>
             </div>
           )}
@@ -717,8 +823,28 @@ function DailyBrief(){
   const [manualVix,setManualVix]=useState('');
   const [manualFg,setManualFg]=useState('');
   const [spyTrend,setSpyTrend]=useState('above');
-  const trades=load('inv_trades',DEMO_TRADES);
-  const openTrades=trades.filter(t=>t.status==='Open');
+
+  // Notion-backed positions + stats
+  const [positions,setPositions]=useState([]);
+  const [closedTrades,setClosedTrades]=useState([]);
+  const [stats,setStats]=useState(null);
+  const [posStatus,setPosStatus]=useState('idle'); // idle | loading | done | failed
+
+  const fetchPositions=useCallback(async()=>{
+    if(window.location.protocol==='file:')return;
+    setPosStatus('loading');
+    try{
+      const r=await fetch('/api/get-positions');
+      const d=await r.json();
+      if(d.positions)setPositions(d.positions);
+      if(d.closedTrades)setClosedTrades(d.closedTrades);
+      if(d.stats)setStats(d.stats);
+      setPosStatus('done');
+    }catch(e){
+      logError('FETCH_POSITIONS',e.message,{});
+      setPosStatus('failed');
+    }
+  },[]);
 
   const refresh=useCallback(async()=>{
     setStatus('loading');setLive(null);
@@ -729,7 +855,13 @@ function DailyBrief(){
     else{setLive({vix:d.vix,spy:d.spy,fg:d.fg});setStatus('done');setTs(new Date());}
   },[]);
 
-  useEffect(()=>{refresh();},[]);
+  useEffect(()=>{refresh();fetchPositions();},[]);
+  // Listen for draft confirmations to refresh positions
+  useEffect(()=>{
+    const h=()=>{setTimeout(fetchPositions,2000);};
+    window.addEventListener('refreshDrafts',h);
+    return()=>window.removeEventListener('refreshDrafts',h);
+  },[fetchPositions]);
 
   // regime: prefer live data, fall back to manual entry
   const vixVal=live?.vix?.value||Number(manualVix)||null;
@@ -747,9 +879,6 @@ function DailyBrief(){
     return{l:'Closed',c:'#475569'};
   };
   const ms=mktStatus();
-
-  const closed=trades.filter(t=>t.pnlPct!=null&&t.status!=='Open');
-  const wins=closed.filter(t=>t.pnlPct>0);
 
   return(
     <div className="min-h-screen"style={{background:'#07090f'}}>
@@ -881,31 +1010,107 @@ function DailyBrief(){
         {/* ── order drafts ── */}
         <OrderDrafts/>
 
-        {/* ── open positions ── */}
-        {openTrades.length>0&&(
+        {/* ── open positions (from Notion) ── */}
+        {posStatus==='loading'&&!positions.length&&(
+          <Card className="p-5 flex items-center gap-3">
+            <Spin/><span className="text-sm text-gray-400">Loading positions from Notion…</span>
+          </Card>
+        )}
+        {positions.length>0&&(
           <Card>
-            <div className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-gray-500"
+            <div className="px-4 py-3 flex items-center justify-between"
               style={{borderBottom:'1px solid #0f1828'}}>
-              Open Positions — tap "Why?" to see full analysis
+              <span className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                Open Paper Trades ({positions.length})
+              </span>
+              <button onClick={fetchPositions} className="text-xs text-blue-400 hover:text-blue-300">↻ Refresh</button>
             </div>
-            {openTrades.map(t=>(
-              <PositionCard key={t.id} t={t} regime={regime} live={live}/>
-            ))}
+            {positions.map(t=>{
+              const pnl=t.livePnlPct;
+              const recColor=t.recommendation==='HOLD'?'#22c55e':t.recommendation==='EXIT_NOW'?'#ef4444':'#f59e0b';
+              const tp1=t.tp1||t.entryPrice*1.08,tp2=t.tp2||t.entryPrice*1.15;
+              return(
+                <div key={t.id} style={{borderTop:'1px solid #0f1828',background:'#0a0e1a'}}>
+                  <div className="px-4 py-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-black text-lg text-white">{t.ticker}</span>
+                        <span className="text-xs text-gray-500">{t.strategy}</span>
+                        <Pill text={t.recommendation.replace(/_/g,' ')} color={recColor}/>
+                        {t.score&&<Pill text={`${t.score}/100`} color={t.score>=80?'#22c55e':t.score>=65?'#84cc16':'#f59e0b'}/>}
+                      </div>
+                      {pnl!=null&&(
+                        <span className="font-black text-xl"style={{color:pnl>0?'#22c55e':'#ef4444'}}>
+                          {pnl>0?'+':''}{fmt(pnl,1)}%
+                        </span>
+                      )}
+                    </div>
+                    {/* price grid */}
+                    <div className="grid grid-cols-5 gap-2 mb-2">
+                      {[
+                        {l:'Entry',v:`$${fmt(t.entryPrice)}`,bg:'#0f1828',c:'#e2e8f0'},
+                        {l:'Current',v:t.currentPrice?`$${fmt(t.currentPrice)}`:'—',bg:'#0f1828',c:pnl!=null?(pnl>0?'#4ade80':'#f87171'):'#94a3b8'},
+                        {l:'Stop',v:`$${fmt(t.stopLoss)}`,bg:'#1a0c0c',c:'#f87171'},
+                        {l:'TP1',v:`$${fmt(tp1)}`,bg:'#0a1a0d',c:'#4ade80'},
+                        {l:'Days',v:t.daysHeld!=null?t.daysHeld:'—',bg:'#0f1828',c:t.daysHeld>=8?'#f59e0b':'#94a3b8'},
+                      ].map((b,i)=>(
+                        <div key={i} className="rounded-xl p-2 text-center"style={{background:b.bg}}>
+                          <div className="text-xs text-gray-600">{b.l}</div>
+                          <div className="font-bold text-sm mt-0.5"style={{color:b.c}}>{b.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* reasoning from entry */}
+                    {t.right&&<div className="text-xs text-gray-500 leading-relaxed mb-2">{t.right}</div>}
+                    {/* progress bar: stop ← entry → TP1 */}
+                    {t.currentPrice&&t.entryPrice&&t.stopLoss&&(
+                      <div className="rounded-lg overflow-hidden h-2 flex"style={{background:'#1e2d4a'}}>
+                        {(()=>{
+                          const range=tp1-t.stopLoss;
+                          const pos=Math.max(0,Math.min(1,(t.currentPrice-t.stopLoss)/range));
+                          const entryPos=(t.entryPrice-t.stopLoss)/range;
+                          return(
+                            <>
+                              <div style={{width:`${pos*100}%`,background:t.currentPrice>=t.entryPrice?'#22c55e':'#ef4444',transition:'width 0.5s'}}/>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+                    {t.currentPrice&&(
+                      <div className="flex justify-between text-xs mt-1"style={{color:'#475569'}}>
+                        <span>Stop ${fmt(t.stopLoss)}</span>
+                        <span>Entry ${fmt(t.entryPrice)}</span>
+                        <span>TP1 ${fmt(tp1)}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+        )}
+        {posStatus==='done'&&positions.length===0&&(
+          <Card className="p-4 text-center">
+            <div className="text-gray-500 text-sm mb-1">No open paper trades</div>
+            <div className="text-xs text-gray-600">Run an analysis to find BUY opportunities, or create a draft manually.</div>
           </Card>
         )}
 
-        {/* ── portfolio summary ── */}
+        {/* ── portfolio summary (from Notion) ── */}
         <Card className="p-4">
-          <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">Portfolio</div>
-          <div className="grid grid-cols-4 gap-3 text-center">
+          <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">
+            Portfolio {stats?'':'(loading…)'}
+          </div>
+          <div className="grid grid-cols-5 gap-3 text-center">
             {(()=>{
-              const winRate=closed.length?Math.round(wins.length/closed.length*100):0;
-              const totalPnl=closed.reduce((s,t)=>s+t.pnlPct,0);
+              const s=stats||{winRate:0,totalPnl:0,openCount:0,totalTrades:0,rulesCompliance:100};
               return[
-                {l:'Win Rate',v:`${winRate}%`,c:winRate>=55?'#22c55e':winRate>=45?'#f59e0b':'#ef4444'},
-                {l:'Total P&L',v:`${totalPnl>=0?'+':''}${totalPnl.toFixed(1)}%`,c:totalPnl>=0?'#22c55e':'#ef4444'},
-                {l:'Open',v:openTrades.length,c:'#60a5fa'},
-                {l:'Trades',v:closed.length,c:'#94a3b8'},
+                {l:'Win Rate',v:`${s.winRate}%`,c:s.winRate>=55?'#22c55e':s.winRate>=45?'#f59e0b':'#ef4444'},
+                {l:'Total P&L',v:`${s.totalPnl>=0?'+':''}${fmt(s.totalPnl,1)}%`,c:s.totalPnl>=0?'#22c55e':'#ef4444'},
+                {l:'Open',v:s.openCount||positions.length,c:'#60a5fa'},
+                {l:'Closed',v:s.totalTrades,c:'#94a3b8'},
+                {l:'Rules',v:`${s.rulesCompliance}%`,c:s.rulesCompliance>=90?'#22c55e':'#f59e0b'},
               ];
             })().map((s,i)=>(
               <div key={i}>
@@ -914,7 +1119,14 @@ function DailyBrief(){
               </div>
             ))}
           </div>
-          <button onClick={()=>{window._tab='journal';window._openJournal&&window._openJournal();}}
+          {stats&&stats.avgWin>0&&(
+            <div className="flex justify-center gap-4 mt-2 text-xs text-gray-500">
+              <span>Avg Win: <span className="text-green-400 font-bold">+{stats.avgWin}%</span></span>
+              <span>Avg Loss: <span className="text-red-400 font-bold">{stats.avgLoss}%</span></span>
+              <span>R:R: <span className="text-indigo-400 font-bold">{stats.avgLoss!==0?fmt(Math.abs(stats.avgWin/stats.avgLoss),1):'—'}:1</span></span>
+            </div>
+          )}
+          <button onClick={()=>{window._openJournal&&window._openJournal();}}
             className="w-full mt-3 py-2 rounded-xl text-xs font-semibold text-indigo-400"
             style={{background:'#0f1828',border:'1px solid #1e2d4a'}}>
             View full journal & P&L chart →
@@ -986,8 +1198,10 @@ function DailyBrief(){
 }
 
 // ─── JOURNAL (second view) ───────────────────────────────────────────────
-function Journal({onBack}){
+function Journal({onBack,notionTrades}){
   const [trades,setTrades]=useState(()=>{
+    // Prefer Notion data if available, fall back to localStorage
+    if(notionTrades&&notionTrades.length)return notionTrades;
     const s=load('inv_trades',null);
     if(!s){save('inv_trades',DEMO_TRADES);return DEMO_TRADES;}return s;
   });
@@ -1181,8 +1395,34 @@ function Journal({onBack}){
 // ─── ROOT ─────────────────────────────────────────────────────────────────
 function App(){
   const [view,setView]=useState('brief');
-  window._openJournal=()=>setView('journal');
-  if(view==='journal')return<Journal onBack={()=>setView('brief')}/>;
+  const [notionJournal,setNotionJournal]=useState([]);
+  window._openJournal=(trades)=>{
+    if(trades)setNotionJournal(trades);
+    setView('journal');
+  };
+
+  // Fetch all trades for journal from Notion on first journal open
+  const openJournal=useCallback(async()=>{
+    if(window.location.protocol!=='file:'){
+      try{
+        const r=await fetch('/api/get-positions');
+        const d=await r.json();
+        const all=[...(d.positions||[]),...(d.closedTrades||[])].map(t=>({
+          id:t.id,ticker:t.ticker,strategy:t.strategy,status:t.status,
+          dateOpened:t.dateOpened,dateClosed:t.dateClosed,
+          entryPrice:t.entryPrice,exitPrice:t.exitPrice,stopLoss:t.stopLoss,
+          score:t.score,pnlPct:t.pnlPct||t.livePnlPct,
+          rulesFollowed:t.rulesFollowed,right:t.right,lesson:t.lesson,
+        }));
+        setNotionJournal(all);
+      }catch{}
+    }
+    setView('journal');
+  },[]);
+
+  window._openJournal=openJournal;
+
+  if(view==='journal')return<Journal onBack={()=>setView('brief')} notionTrades={notionJournal}/>;
   return<DailyBrief/>;
 }
 
