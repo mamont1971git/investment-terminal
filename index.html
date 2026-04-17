@@ -1303,6 +1303,10 @@ function DailyBrief(){
   const [evalHistory,setEvalHistory]=useState([]);
   const histChartRef=useRef(null);
   const histCanvasRef=useRef(null);
+  const [consistencyN,setConsistencyN]=useState(3);
+  const [consistencyStatus,setConsistencyStatus]=useState('idle'); // idle|running|done
+  const [consistencyReport,setConsistencyReport]=useState(null);
+  const [consistencyProgress,setConsistencyProgress]=useState(0);
 
   // Load latest eval report from Notion staging DB on mount
   useEffect(()=>{
@@ -1532,6 +1536,35 @@ function DailyBrief(){
       setEvalStatus('error');
     }
   },[fetchPositions]);
+
+  // ── Consistency Test: run evaluation N times and compare ──
+  const runConsistencyTest=useCallback(async()=>{
+    if(window.location.protocol==='file:')return;
+    setConsistencyStatus('running');setConsistencyReport(null);setConsistencyProgress(0);
+    try{
+      // We simulate progress by estimating ~30s per run
+      const progInterval=setInterval(()=>{
+        setConsistencyProgress(p=>Math.min(p+1,consistencyN*100-1));
+      },300);
+      const r=await fetch('/api/analyze',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({mode:'consistency',command:'evaluate performance',n:consistencyN})
+      });
+      clearInterval(progInterval);
+      const d=await r.json();
+      if(d._consistency){
+        setConsistencyReport(d._consistency);
+        setConsistencyStatus('done');
+      }else{
+        setConsistencyReport({error:'No consistency data returned'});
+        setConsistencyStatus('done');
+      }
+      setConsistencyProgress(consistencyN*100);
+    }catch(e){
+      logError('CONSISTENCY_ERROR',e.message,{});
+      setConsistencyStatus('idle');
+    }
+  },[consistencyN]);
 
   // ── Apply Fixes: write approved recommendations to Notion Tuning Log ──
   const TUNING_DB='c326714ad2b748878e94c473760c97e3';
@@ -2199,6 +2232,164 @@ function DailyBrief(){
               <div className="text-xs text-gray-600 mt-1">Check console for details. Try again.</div>
             </div>
           )}
+
+          {/* ── CONSISTENCY TEST ── */}
+          <div className="px-4 py-3"style={{borderTop:'1px solid #0f1828'}}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-bold uppercase tracking-wider text-gray-600">
+                Consistency Test
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-600">Runs:</span>
+                <select value={consistencyN} onChange={e=>setConsistencyN(parseInt(e.target.value))}
+                  className="text-xs rounded px-1.5 py-0.5"
+                  style={{background:'#1e2d4a',color:'#94a3b8',border:'1px solid #2d3f5a',outline:'none'}}>
+                  {[2,3,4,5].map(n=><option key={n} value={n}>{n}</option>)}
+                </select>
+                <button onClick={runConsistencyTest}
+                  disabled={consistencyStatus==='running'}
+                  className="px-3 py-1 rounded-lg text-xs font-semibold transition-all hover:scale-105 flex items-center gap-1.5"
+                  style={{background:consistencyStatus==='running'?'#4b556333':'#f59e0b18',
+                    color:consistencyStatus==='running'?'#9ca3af':'#f59e0b',
+                    border:`1px solid ${consistencyStatus==='running'?'#4b556333':'#f59e0b33'}`}}>
+                  {consistencyStatus==='running'?<><Spin/><span>Running {consistencyN} evals…</span></>:'🔬 Test Confidence'}
+                </button>
+              </div>
+            </div>
+
+            {consistencyStatus==='running'&&(
+              <div className="mt-2">
+                <div className="w-full h-1.5 rounded-full overflow-hidden"style={{background:'#1e2d4a'}}>
+                  <div className="h-full rounded-full transition-all"
+                    style={{width:`${Math.min((consistencyProgress/(consistencyN*100))*100,95)}%`,background:'#f59e0b'}}/>
+                </div>
+                <div className="text-xs text-gray-600 mt-1 text-center">
+                  Running adversarial review {consistencyN} times on same dataset…
+                </div>
+              </div>
+            )}
+
+            {consistencyStatus==='done'&&consistencyReport&&!consistencyReport.error&&(
+              <div className="mt-2 space-y-3">
+                {/* Overall confidence banner */}
+                <div className="rounded-xl px-4 py-3 flex items-center gap-4"
+                  style={{background:
+                    consistencyReport.overallConfidence>=80?'#22c55e0a':
+                    consistencyReport.overallConfidence>=50?'#f59e0b0a':'#ef44440a',
+                    border:`1px solid ${
+                    consistencyReport.overallConfidence>=80?'#22c55e33':
+                    consistencyReport.overallConfidence>=50?'#f59e0b33':'#ef444433'}`}}>
+                  <div className="text-center">
+                    <div className="text-2xl font-black"style={{color:
+                      consistencyReport.overallConfidence>=80?'#22c55e':
+                      consistencyReport.overallConfidence>=50?'#f59e0b':'#ef4444'}}>
+                      {consistencyReport.overallConfidence}%
+                    </div>
+                    <div className="text-xs text-gray-500">Confidence</div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-sm font-bold"style={{color:
+                      consistencyReport.overallConfidence>=80?'#22c55e':
+                      consistencyReport.overallConfidence>=50?'#f59e0b':'#ef4444'}}>
+                      {consistencyReport.confidenceLabel} Reproducibility
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {consistencyReport.runsCompleted} runs completed — {consistencyReport.stableRecommendations.length} stable recs,{' '}
+                      {consistencyReport.unstableRecommendations.length} unstable
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-xs text-gray-600">Grade</div>
+                    <div className="text-sm font-bold text-gray-300">
+                      {consistencyReport.grades.join(' / ')}
+                    </div>
+                    <div className="text-xs text-gray-600">{consistencyReport.gradeConsistency}% agree</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-xs text-gray-600">Risk</div>
+                    <div className="text-sm font-bold text-gray-300">
+                      {consistencyReport.riskMean} ± {consistencyReport.riskStdDev}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Stable recommendations */}
+                {consistencyReport.stableRecommendations.length>0&&(
+                  <div>
+                    <div className="text-xs font-semibold text-green-400 mb-1.5">
+                      Stable Recommendations (appeared in 60%+ of runs)
+                    </div>
+                    <div className="space-y-1">
+                      {consistencyReport.stableRecommendations.map((sr,i)=>{
+                        const rec=sr.example;
+                        const sevColor=rec.severity==='critical'?'#ef4444':rec.severity==='high'?'#f97316':rec.severity==='medium'?'#f59e0b':'#94a3b8';
+                        return(
+                          <div key={i} className="rounded-lg px-3 py-2"
+                            style={{background:'#22c55e06',border:'1px solid #22c55e22'}}>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-black px-1.5 py-0.5 rounded"
+                                style={{background:'#22c55e22',color:'#22c55e'}}>{sr.stability}%</span>
+                              <span className="text-xs font-bold px-1.5 py-0.5 rounded-full"
+                                style={{background:sevColor+'18',color:sevColor,border:`1px solid ${sevColor}33`,fontSize:'10px'}}>
+                                {rec.severity?.toUpperCase()}
+                              </span>
+                              <span className="text-xs px-1.5 py-0.5 rounded-full"
+                                style={{background:'#3b82f618',color:'#60a5fa',border:'1px solid #3b82f633',fontSize:'10px'}}>
+                                {rec.category}
+                              </span>
+                              <span className="text-xs font-semibold text-gray-200">{rec.title}</span>
+                              <span className="text-xs text-gray-600 ml-auto">{sr.appearedIn}/{sr.totalRuns} runs</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Unstable recommendations */}
+                {consistencyReport.unstableRecommendations.length>0&&(
+                  <div>
+                    <div className="text-xs font-semibold text-red-400 mb-1.5">
+                      Unstable — Noise (appeared in &lt;60% of runs)
+                    </div>
+                    <div className="space-y-1">
+                      {consistencyReport.unstableRecommendations.map((ur,i)=>(
+                        <div key={i} className="rounded-lg px-3 py-1.5"
+                          style={{background:'#ef44440a',border:'1px solid #ef444422'}}>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-1.5 py-0.5 rounded"
+                              style={{background:'#ef444422',color:'#ef4444'}}>{ur.stability}%</span>
+                            <span className="text-xs text-gray-500">{ur.example.category}</span>
+                            <span className="text-xs text-gray-400">{ur.example.title}</span>
+                            <span className="text-xs text-gray-600 ml-auto">{ur.appearedIn}/{ur.totalRuns} runs</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Category stability */}
+                <div>
+                  <div className="text-xs font-semibold text-gray-500 mb-1.5">Category Detection Stability</div>
+                  <div className="flex flex-wrap gap-2">
+                    {consistencyReport.categoryStability.map((cs,i)=>(
+                      <div key={i} className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs"
+                        style={{background:'#1e2d4a44',border:'1px solid #1e2d4a'}}>
+                        <span className="font-semibold text-gray-300">{cs.category}</span>
+                        <span style={{color:cs.stability>=80?'#22c55e':cs.stability>=50?'#f59e0b':'#ef4444'}}>{cs.stability}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {consistencyStatus==='done'&&consistencyReport&&consistencyReport.error&&(
+              <div className="text-xs text-red-400 mt-2">{consistencyReport.error}</div>
+            )}
+          </div>
         </Card>
 
         {/* ── what to do next ── */}

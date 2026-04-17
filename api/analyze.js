@@ -551,7 +551,9 @@ module.exports = async (req, res) => {
   const discoverFocus = parsed.focus || ''; // e.g. "tech", "energy", "value", "momentum"
 
   // Detect diagnose mode (performance evaluation + prescription)
-  const isDiagnoseMode = mode === 'diagnose' || /evaluate.*performance|diagnose|run.*diagnostics/i.test(command);
+  const isDiagnoseMode = mode === 'diagnose' || mode === 'consistency' || /evaluate.*performance|diagnose|run.*diagnostics/i.test(command);
+  const isConsistencyMode = mode === 'consistency';
+  const consistencyN = isConsistencyMode ? Math.min(Math.max(parseInt(parsed.n) || 3, 2), 7) : 1;
 
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick' && !isAssessMode;
@@ -1177,28 +1179,142 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   const maxTokens = isQuick ? 2048 : 8192;
   const systemPrompt = isDiagnoseMode ? diagnoseSystemPrompt : (isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt)));
 
-  let analysisText;
-  try {
-    const message = await client.messages.create({
-      model: modelId,
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: context }],
-    });
-    analysisText = message.content[0].text;
-  } catch(e) {
-    return res.status(500).json({error:'Claude API error: '+e.message});
+  // Run Claude call(s) — single for normal, N times for consistency mode
+  const allRuns = [];
+  for (let run = 0; run < consistencyN; run++) {
+    try {
+      const message = await client.messages.create({
+        model: modelId,
+        max_tokens: maxTokens,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: context }],
+      });
+      const rawText = message.content[0].text;
+      const clean = rawText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+      try {
+        allRuns.push({ parsed: JSON.parse(clean), raw: rawText, run: run + 1 });
+      } catch(pe) {
+        allRuns.push({ parsed: null, raw: rawText, run: run + 1, parseError: pe.message });
+      }
+    } catch(e) {
+      allRuns.push({ parsed: null, raw: null, run: run + 1, error: e.message });
+    }
   }
 
-  // Parse JSON response
-  let analysis;
-  try {
-    // Strip any markdown code fences if present
-    const clean = analysisText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
-    analysis = JSON.parse(clean);
-  } catch(e) {
-    // If JSON parse fails, return raw text in a wrapper
-    return res.json({ raw: analysisText, parseError: e.message });
+  // If all runs failed, return error
+  const successfulRuns = allRuns.filter(r => r.parsed);
+  if (successfulRuns.length === 0) {
+    return res.status(500).json({ error: 'All Claude calls failed', runs: allRuns.map(r => r.error || r.parseError) });
+  }
+
+  // For consistency mode: compute cross-run stability metrics
+  let consistencyReport = null;
+  if (isConsistencyMode && successfulRuns.length >= 2) {
+    // Extract all recommendations across runs
+    const allRecs = successfulRuns.map(r => r.parsed.recommendations || []);
+
+    // Build a fingerprint for each rec: category + severity + direction (first 50 chars of paramAfter)
+    function recFingerprint(rec) {
+      return `${rec.category}::${rec.severity}::${(rec.paramAfter || '').slice(0, 80).toLowerCase().replace(/\s+/g,' ')}`;
+    }
+
+    // Count how many runs each unique fingerprint appears in
+    const fpCounts = {};
+    const fpExamples = {};
+    for (let i = 0; i < allRecs.length; i++) {
+      const seen = new Set(); // dedupe within a single run
+      for (const rec of allRecs[i]) {
+        const fp = recFingerprint(rec);
+        if (!seen.has(fp)) {
+          fpCounts[fp] = (fpCounts[fp] || 0) + 1;
+          if (!fpExamples[fp]) fpExamples[fp] = rec;
+          seen.add(fp);
+        }
+      }
+    }
+
+    // Also match by category alone (looser match)
+    const catCounts = {};
+    for (let i = 0; i < allRecs.length; i++) {
+      const seen = new Set();
+      for (const rec of allRecs[i]) {
+        if (!seen.has(rec.category)) {
+          catCounts[rec.category] = (catCounts[rec.category] || 0) + 1;
+          seen.add(rec.category);
+        }
+      }
+    }
+
+    const N = successfulRuns.length;
+    const stableRecs = Object.entries(fpCounts)
+      .filter(([fp, count]) => count >= Math.ceil(N * 0.6)) // appears in 60%+ of runs
+      .map(([fp, count]) => ({
+        fingerprint: fp,
+        appearedIn: count,
+        totalRuns: N,
+        stability: Math.round((count / N) * 100),
+        example: fpExamples[fp],
+      }))
+      .sort((a, b) => b.stability - a.stability);
+
+    const unstableRecs = Object.entries(fpCounts)
+      .filter(([fp, count]) => count < Math.ceil(N * 0.6))
+      .map(([fp, count]) => ({
+        fingerprint: fp,
+        appearedIn: count,
+        totalRuns: N,
+        stability: Math.round((count / N) * 100),
+        example: fpExamples[fp],
+      }))
+      .sort((a, b) => b.stability - a.stability);
+
+    // Category consistency
+    const categoryStability = Object.entries(catCounts).map(([cat, count]) => ({
+      category: cat,
+      appearedIn: count,
+      totalRuns: N,
+      stability: Math.round((count / N) * 100),
+    })).sort((a, b) => b.stability - a.stability);
+
+    // Grade consistency
+    const grades = successfulRuns.map(r => r.parsed.overallGrade || '?');
+    const gradeMode = grades.sort().reduce((a, b, i, arr) =>
+      arr.filter(v => v === a).length >= arr.filter(v => v === b).length ? a : b);
+    const gradeConsistency = Math.round((grades.filter(g => g === gradeMode).length / N) * 100);
+
+    // Risk score variance
+    const risks = successfulRuns.map(r => r.parsed.riskScore || 0);
+    const riskMean = risks.reduce((a, b) => a + b, 0) / risks.length;
+    const riskVariance = risks.reduce((a, b) => a + Math.pow(b - riskMean, 2), 0) / risks.length;
+
+    // Overall system confidence
+    const totalFingerprints = Object.keys(fpCounts).length;
+    const stableCount = stableRecs.length;
+    const overallConfidence = totalFingerprints > 0 ? Math.round((stableCount / totalFingerprints) * 100) : 0;
+
+    consistencyReport = {
+      runsCompleted: N,
+      runsRequested: consistencyN,
+      overallConfidence,
+      confidenceLabel: overallConfidence >= 80 ? 'High' : overallConfidence >= 50 ? 'Medium' : 'Low',
+      gradeConsensus: gradeMode,
+      gradeConsistency,
+      grades,
+      riskScores: risks,
+      riskMean: Math.round(riskMean * 10) / 10,
+      riskStdDev: Math.round(Math.sqrt(riskVariance) * 10) / 10,
+      stableRecommendations: stableRecs,
+      unstableRecommendations: unstableRecs,
+      categoryStability,
+      totalUniqueFingerprints: totalFingerprints,
+    };
+  }
+
+  // Use the first successful run as the primary analysis
+  const analysisText = successfulRuns[0].raw;
+  let analysis = successfulRuns[0].parsed;
+  if (!analysis) {
+    return res.json({ raw: analysisText, parseError: 'Failed to parse' });
   }
 
   // Persist attribution + reasoning back to Notion for open positions (full mode only)
@@ -1290,6 +1406,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   analysis.draftsSkipped = draftsSkipped;
   analysis.wallet = walletState;
   if (isDiagnoseMode && diagnosticData) analysis._diagnostics = diagnosticData;
+  if (isConsistencyMode && consistencyReport) analysis._consistency = consistencyReport;
   analysis._activeTunings = approvedTunings ? approvedTunings.length : 0;
 
   // Track source availability for frontend alerts
