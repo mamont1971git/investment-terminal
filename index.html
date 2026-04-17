@@ -991,6 +991,36 @@ function AnalysisPanel(){
               </span>
             </div>
           )}
+          {/* source status alerts */}
+          {result._sourceStatus&&(()=>{
+            const ss=result._sourceStatus;
+            const failures=[];
+            if(ss.technicalAnalysis==='failed')failures.push({name:'Technical Analysis',icon:'📊',detail:'No OHLCV data from Finnhub'});
+            if(ss.worldMonitor==='failed')failures.push({name:'World Monitor',icon:'🌍',detail:'Macro signals + F&G unavailable'});
+            if(ss.finvizScreener==='failed'||ss.finvizScreener==='empty')failures.push({name:'Finviz Screener',icon:'🔍',detail:'Screener returned no tickers'});
+            if(ss.capitolTrades==='failed')failures.push({name:'Capitol Trades',icon:'🏛️',detail:'Congressional trading data unavailable'});
+            if(ss.fearGreed==='failed')failures.push({name:'Fear & Greed',icon:'😱',detail:'Composite index unavailable'});
+            if(ss.finnhubPrice==='failed')failures.push({name:'Finnhub Prices',icon:'💲',detail:'SPY price unavailable'});
+            if(!failures.length)return null;
+            return(
+              <div className="px-4 py-2"style={{background:'#7f1d1d22',borderBottom:'1px solid #ef444433'}}>
+                <div className="text-xs font-bold text-red-400 mb-1">
+                  ⚠️ {failures.length} signal source{failures.length>1?'s':''} unavailable — analysis may be incomplete
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  {failures.map((f,i)=>(
+                    <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs"
+                      style={{background:'#ef444418',border:'1px solid #ef444433',color:'#fca5a5'}}>
+                      <span style={{fontSize:'10px'}}>{f.icon}</span>
+                      <span className="font-semibold">{f.name}</span>
+                      <span className="text-red-500">— {f.detail}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* regime */}
           {result.regime&&(
             <div className="px-4 py-4"

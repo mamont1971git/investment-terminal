@@ -53,6 +53,68 @@ async function fetchFinvizSignals() {
   return results;
 }
 
+// ── Capitol Trades: live congressional stock trading data ──────────────
+async function fetchCapitolTrades() {
+  try {
+    const r = await httpsGet('https://www.capitoltrades.com/trades', {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+      'Accept': 'text/html',
+    });
+    if (r.status !== 200) return [];
+
+    // Extract trade rows from HTML — look for ticker symbols and politician names
+    // Capitol Trades uses table rows with ticker links and politician info
+    const trades = [];
+
+    // Pattern 1: extract ticker symbols from trade links
+    const tickerPattern = /issuer-ticker[^>]*>([A-Z]{1,5})<\/span>/g;
+    const politicianPattern = /politician-name[^>]*>([^<]+)<\/a>/g;
+    const typePattern = /trade-type[^>]*>(buy|sell)<\/span>/gi;
+
+    // Simpler approach: look for structured data patterns in the HTML
+    // Capitol Trades pages contain rows like: politician | ticker | type | date | amount
+    const rowPattern = /<tr[^>]*class="[^"]*q-tr[^"]*"[^>]*>([\s\S]*?)<\/tr>/gi;
+    let match;
+    while ((match = rowPattern.exec(r.body)) !== null && trades.length < 20) {
+      const row = match[1];
+      const ticker = row.match(/issuer-ticker[^>]*>\s*([A-Z]{1,5})\s*</) ||
+                     row.match(/\/issuers\/[^"]*"[^>]*>([A-Z]{1,5})</);
+      const politician = row.match(/politician-name[^>]*>\s*([^<]+)</) ||
+                         row.match(/q-fieldset[^>]*politician[^>]*>[\s\S]*?<a[^>]*>([^<]+)</);
+      const tradeType = row.match(/(buy|sell|exchange)/i);
+      const amount = row.match(/\$[\d,]+\s*[-–]\s*\$[\d,]+/) || row.match(/\$[\d,]+/);
+      const dateMatch = row.match(/(\d{4}-\d{2}-\d{2})/) || row.match(/(\w+ \d+,?\s*\d{4})/);
+
+      if (ticker) {
+        trades.push({
+          ticker: ticker[1].trim(),
+          politician: politician ? politician[1].trim() : 'Unknown',
+          type: tradeType ? tradeType[1].toUpperCase() : '?',
+          amount: amount ? amount[0] : '?',
+          date: dateMatch ? dateMatch[1] : '?',
+        });
+      }
+    }
+
+    // Fallback: if structured parsing fails, try extracting any ticker-like links
+    if (trades.length === 0) {
+      const simpleTickerPattern = /\/issuers\/[^"]*"[^>]*>.*?<[^>]*>([A-Z]{1,5})<\/(?:span|a)>/g;
+      let m;
+      while ((m = simpleTickerPattern.exec(r.body)) !== null && trades.length < 15) {
+        trades.push({ ticker: m[1], politician: '?', type: '?', amount: '?', date: '?' });
+      }
+    }
+
+    // Deduplicate by ticker and take unique recent trades
+    const seen = new Set();
+    return trades.filter(t => {
+      if (seen.has(t.ticker)) return false;
+      seen.add(t.ticker);
+      return true;
+    }).slice(0, 15);
+  } catch { return []; }
+}
+
 // ── World Monitor: live geopolitical + macro intelligence ───────────────
 async function fetchWorldMonitor() {
   const WM = 'https://api.worldmonitor.app';
@@ -493,13 +555,14 @@ module.exports = async (req, res) => {
 
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick' && !isAssessMode;
-  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals, approvedTunings] = await Promise.all([
+  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals, capitolTrades, approvedTunings] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
     (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
     fetchWorldMonitor(),
     NOTION_TOKEN ? fetchWalletState(NOTION_TOKEN) : Promise.resolve({ cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 }),
     (isDiscoverMode || mode === 'full') ? fetchFinvizSignals() : Promise.resolve(null),
+    (!isQuick) ? fetchCapitolTrades() : Promise.resolve([]),
     (!isQuick && !isDiagnoseMode && NOTION_TOKEN) ? fetchApprovedTunings(NOTION_TOKEN) : Promise.resolve([]),
   ]);
 
@@ -663,6 +726,17 @@ ${sw.ranked.filter(s=>s.totalTrades>0).map(s=>`  ${s.rank}. ${s.source}: ${s.wei
 `;
     } catch { return ''; }
   })()}
+${capitolTrades && capitolTrades.length > 0 ? `🏛️ CAPITOL TRADES — LIVE CONGRESSIONAL TRADING (capitoltrades.com):
+${capitolTrades.map(t => `  ${t.type} ${t.ticker} — ${t.politician} | ${t.amount} | ${t.date}`).join('\n')}
+${(() => {
+  // Flag overlap with open positions or screener candidates
+  const ctTickers = new Set(capitolTrades.map(t => t.ticker));
+  const overlap = openTickers.filter(t => ctTickers.has(t));
+  const buys = capitolTrades.filter(t => t.type === 'BUY');
+  return (overlap.length ? `⚠️ PORTFOLIO OVERLAP: ${overlap.join(', ')} — congress members also trading these\n` : '') +
+         (buys.length >= 3 ? `📈 CLUSTER BUY SIGNAL: ${buys.length} congressional purchases detected — historically bullish\n` : '');
+})()}` : '🏛️ CAPITOL TRADES: Data unavailable — scraper returned no results\n'}
+
 OPEN PAPER TRADES (${openFormatted.length}):
 ${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}
 ${approvedTunings && approvedTunings.length > 0 ? `
@@ -716,7 +790,7 @@ RULES:
 - ALWAYS include ALL of these 7 sources for every ticker:
   1. "Technical Analysis" — cite specific RSI, MACD, Z-Score, Bollinger, OBV values from computed data above
   2. "CNN Fear & Greed" — current market sentiment from VIX/F&G. If VIX data available, use it as proxy
-  3. "Capitol Trades" — any known congressional trading activity for this ticker. If none known, say "No recent congressional trades detected" with verdict NO_DATA and weight 0
+  3. "Capitol Trades" — use the LIVE congressional trading data from Capitol Trades above. If a ticker appears in recent congressional trades, this is a strong signal. If the data says "unavailable", use verdict NO_DATA with weight 0
   4. "Finviz Screener" — whether this ticker appears in oversold/breakout screeners based on its current technicals. Infer from the computed indicators whether it would show up
   5. "Earnings Calendar" — use the UPCOMING EARNINGS data from World Monitor above. Flag if a ticker reports within 7 days (risk for mean reversion, catalyst for momentum). If not in calendar, say "No earnings in next 2 weeks"
   6. "Sector Momentum" — how this ticker's sector is performing (tech, gold, healthcare, etc.)
@@ -1205,6 +1279,17 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   analysis.wallet = walletState;
   if (isDiagnoseMode && diagnosticData) analysis._diagnostics = diagnosticData;
   analysis._activeTunings = approvedTunings ? approvedTunings.length : 0;
+
+  // Track source availability for frontend alerts
+  analysis._sourceStatus = {
+    technicalAnalysis: Object.keys(taData).length > 0 ? 'ok' : 'failed',
+    worldMonitor: (wm.macroSignals || wm.fearGreed) ? 'ok' : 'failed',
+    finvizScreener: finvizSignals ? (Object.values(finvizSignals).some(v => v.length > 0) ? 'ok' : 'empty') : 'skipped',
+    capitolTrades: capitolTrades && capitolTrades.length > 0 ? 'ok' : 'failed',
+    earningsCalendar: wm.earningsCalendar && wm.earningsCalendar.length > 0 ? 'ok' : 'empty',
+    fearGreed: wm.fearGreed ? 'ok' : 'failed',
+    finnhubPrice: market.spyPrice ? 'ok' : 'failed',
+  };
   // Collect price alerts for opportunities that couldn't get live prices
   analysis.priceAlerts = (analysis.opportunities || [])
     .filter(o => o._priceAlert)
