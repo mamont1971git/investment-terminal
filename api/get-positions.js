@@ -1,6 +1,7 @@
 // GET /api/get-positions
 // Returns all open paper trades from Notion with live price + P&L
 // Also returns closed trades for portfolio stats
+// Uses Finnhub API (60 calls/min free) for live prices and OHLCV candles
 const https = require('https');
 let computeAll;
 try { computeAll = require('./_lib/indicators').computeAll; } catch { computeAll = null; }
@@ -27,40 +28,38 @@ function notionQuery(filter, sorts, token, pageSize=50) {
 
 function fetchOHLCV(ticker, apiKey) {
   return new Promise(resolve => {
-    https.get(
-      `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${apiKey}`,
-      { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 },
-      res => {
-        let d = ''; res.on('data', c => d += c);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(d);
-            if (json['Note'] || json['Information']) { resolve(null); return; }
-            const ts = json['Time Series (Daily)'];
-            if (!ts) { resolve(null); return; }
-            resolve(Object.entries(ts).map(([date, v]) => ({
-              date, open: parseFloat(v['1. open']), high: parseFloat(v['2. high']),
-              low: parseFloat(v['3. low']), close: parseFloat(v['4. close']),
-              volume: parseInt(v['5. volume']),
-            })).reverse());
-          } catch { resolve(null); }
-        });
-      }
-    ).on('error', () => resolve(null)).on('timeout', function() { this.destroy(); resolve(null); });
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - 120 * 86400; // ~120 days of daily candles
+    const url = `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${apiKey}`;
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(d);
+          if (json.s !== 'ok' || !json.c || !json.c.length) { resolve(null); return; }
+          const bars = json.t.map((ts, i) => ({
+            date: new Date(ts * 1000).toISOString().split('T')[0],
+            open: json.o[i], high: json.h[i], low: json.l[i],
+            close: json.c[i], volume: json.v[i],
+          }));
+          resolve(bars);
+        } catch { resolve(null); }
+      });
+    }).on('error', () => resolve(null)).on('timeout', function() { this.destroy(); resolve(null); });
   });
 }
 
 async function getPrice(ticker, apiKey) {
   return new Promise(resolve => {
     https.get(
-      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${apiKey}`,
+      `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${apiKey}`,
       { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 5000 },
       res => {
         let d = ''; res.on('data', c => d += c);
         res.on('end', () => {
           try {
-            const q = JSON.parse(d)['Global Quote'];
-            resolve(q?.['05. price'] ? parseFloat(q['05. price']) : null);
+            const q = JSON.parse(d);
+            resolve(q && q.c && q.c > 0 ? q.c : null);
           } catch { resolve(null); }
         });
       }
@@ -107,7 +106,7 @@ module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
 
   const TOKEN = process.env.NOTION_TOKEN;
-  const ALPHA = process.env.ALPHA_VANTAGE_KEY;
+  const ALPHA = process.env.FINNHUB_KEY;
   if (!TOKEN) return res.status(503).json({ error: 'NOTION_TOKEN not set' });
 
   // Fetch open paper trades + recent closed in parallel
@@ -143,27 +142,27 @@ module.exports = async (req, res) => {
   const uniqueTickers = [...new Set(openTrades.map(t => t.ticker).filter(Boolean))];
   const prices = {};
 
-  // Fetch OHLCV for TA indicators (first 3 get full TA, rest get price-only)
+  // Fetch OHLCV for TA indicators — no ticker limit (Finnhub: 60 calls/min)
   const taData = {};
   if (ALPHA && computeAll && uniqueTickers.length > 0) {
-    for (const ticker of uniqueTickers.slice(0, 3)) {
+    for (const ticker of uniqueTickers) {
       try {
         const bars = await fetchOHLCV(ticker, ALPHA);
         if (bars && bars.length >= 30) taData[ticker] = computeAll(bars);
       } catch {}
-      if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 400));
+      if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 250));
     }
-    // Fetch price-only for remaining tickers that didn't get OHLCV
+    // Fetch price-only for any tickers where OHLCV failed
     const remaining = uniqueTickers.filter(t => !taData[t]);
-    for (const ticker of remaining.slice(0, 5)) {
+    for (const ticker of remaining) {
       prices[ticker] = await getPrice(ticker, ALPHA);
-      if (remaining.length > 1) await new Promise(r => setTimeout(r, 300));
+      if (remaining.length > 1) await new Promise(r => setTimeout(r, 250));
     }
   } else if (ALPHA && uniqueTickers.length > 0) {
     // No TA engine: just fetch prices for all
-    for (const ticker of uniqueTickers.slice(0, 8)) {
+    for (const ticker of uniqueTickers) {
       prices[ticker] = await getPrice(ticker, ALPHA);
-      if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 300));
+      if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 250));
     }
   }
 

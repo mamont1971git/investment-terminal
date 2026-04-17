@@ -170,32 +170,27 @@ function compressIndicators(ind) {
   };
 }
 
-// ─── Alpha Vantage OHLCV fetch ──────────────────────────────────────────────
+// ─── Finnhub OHLCV candle fetch ─────────────────────────────────────────────
 
 function fetchOHLCV(ticker, apiKey) {
   return new Promise(resolve => {
-    const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${apiKey}`;
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - 120 * 86400; // ~120 days of daily candles
+    const url = `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${apiKey}`;
     https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 }, res => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
         try {
           const json = JSON.parse(d);
-          if (json['Note'] || json['Information']) {
-            resolve({ error: 'rate_limited', message: json['Note'] || json['Information'] });
+          if (json.s !== 'ok' || !json.c || !json.c.length) {
+            resolve({ error: 'no_data', message: json.s || 'empty response' });
             return;
           }
-          const ts = json['Time Series (Daily)'];
-          if (!ts) { resolve({ error: 'no_data' }); return; }
-          const bars = Object.entries(ts)
-            .map(([date, v]) => ({
-              date,
-              open: parseFloat(v['1. open']),
-              high: parseFloat(v['2. high']),
-              low: parseFloat(v['3. low']),
-              close: parseFloat(v['4. close']),
-              volume: parseInt(v['5. volume']),
-            }))
-            .reverse(); // oldest first
+          const bars = json.t.map((ts, i) => ({
+            date: new Date(ts * 1000).toISOString().split('T')[0],
+            open: json.o[i], high: json.h[i], low: json.l[i],
+            close: json.c[i], volume: json.v[i],
+          }));
           resolve({ bars });
         } catch (e) { resolve({ error: 'parse_failed', message: e.message }); }
       });
@@ -230,9 +225,9 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const TOKEN = process.env.NOTION_TOKEN;
-  const ALPHA = process.env.ALPHA_VANTAGE_KEY;
+  const ALPHA = process.env.FINNHUB_KEY;
   if (!TOKEN) return res.status(503).json({ error: 'NOTION_TOKEN not set' });
-  if (!ALPHA) return res.status(503).json({ error: 'ALPHA_VANTAGE_KEY not set' });
+  if (!ALPHA) return res.status(503).json({ error: 'FINNHUB_KEY not set' });
 
   // Parse tickers from query or body
   let tickers = [];
@@ -253,7 +248,7 @@ module.exports = async (req, res) => {
   }
 
   if (!tickers.length) return res.json({ error: 'No tickers specified', usage: '?tickers=AAPL,MSFT' });
-  tickers = tickers.slice(0, 8).map(t => t.trim().toUpperCase()); // max 8 tickers
+  tickers = tickers.map(t => t.trim().toUpperCase()); // no limit — Finnhub 60 calls/min
 
   // Get or create cache DB
   const dbId = await getOrCreateCacheDB(TOKEN);

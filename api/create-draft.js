@@ -17,11 +17,11 @@ function notionPost(path, body, token) {
 }
 async function fetchPrice(ticker, apiKey) {
   return new Promise(resolve => {
-    https.get(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${apiKey}`,
-      {headers:{'User-Agent':'Mozilla/5.0'}}, res => {
+    https.get(`https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${apiKey}`,
+      {headers:{'User-Agent':'Mozilla/5.0'},timeout:5000}, res => {
       let d=''; res.on('data',c=>d+=c);
-      res.on('end',()=>{ try{ const q=JSON.parse(d)['Global Quote']; resolve(q?.['05. price']?parseFloat(q['05. price']):null); }catch{resolve(null);} });
-    }).on('error',()=>resolve(null));
+      res.on('end',()=>{ try{ const q=JSON.parse(d); resolve(q&&q.c&&q.c>0?q.c:null); }catch{resolve(null);} });
+    }).on('error',()=>resolve(null)).on('timeout',function(){this.destroy();resolve(null);});
   });
 }
 
@@ -32,7 +32,7 @@ module.exports = async (req, res) => {
   if (req.method==='OPTIONS') return res.status(200).end();
 
   const TOKEN = process.env.NOTION_TOKEN;
-  const ALPHA = process.env.ALPHA_VANTAGE_KEY;
+  const ALPHA = process.env.FINNHUB_KEY;
   if (!TOKEN) return res.status(503).json({error:'NOTION_TOKEN not set'});
 
   let body=''; req.on('data',c=>body+=c);

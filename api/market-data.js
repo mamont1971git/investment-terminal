@@ -34,6 +34,14 @@ function parseAlphaVantageDaily(json) {
     .map(([date, v]) => ({ date, close: parseFloat(v['4. close']) }));
 }
 
+function parseFinnhubCandles(json) {
+  if (json.s !== 'ok' || !json.c || !json.c.length) return [];
+  return json.t.map((ts, i) => ({
+    date: new Date(ts * 1000).toISOString().split('T')[0],
+    close: json.c[i],
+  }));
+}
+
 // ── 50-day EMA ───────────────────────────────────────────────────────────────
 function calc50EMA(rows) {
   if (rows.length < 52) return null;
@@ -64,6 +72,7 @@ module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
 
   const ALPHA_KEY = process.env.ALPHA_VANTAGE_KEY || 'demo';
+  const FINNHUB_KEY = process.env.FINNHUB_KEY;
   const notes = [];
   let vix = null, spy = null, fg = null;
 
@@ -76,17 +85,17 @@ module.exports = async (req, res) => {
     vix = { value: +v.toFixed(2), change: +(v-p).toFixed(2), pct: +((v-p)/p*100).toFixed(2) };
   } catch(e) {
     notes.push('VIX/Stooq failed: ' + e.message);
-    // Fallback: Alpha Vantage
+    // Fallback: Finnhub doesn't support VIX directly, try Alpha Vantage legacy
     try {
       const r = await get(`https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=VIX&apikey=${ALPHA_KEY}`);
       const rows = parseAlphaVantageDaily(JSON.parse(r.body));
       if (rows.length < 2) throw new Error('no rows');
       const v = rows[rows.length-1].close, p = rows[rows.length-2].close;
       vix = { value: +v.toFixed(2), change: +(v-p).toFixed(2), pct: +((v-p)/p*100).toFixed(2), source: 'alphavantage' };
-    } catch(e2) { notes.push('VIX/AlphaVantage also failed: ' + e2.message); }
+    } catch(e2) { notes.push('VIX fallback also failed: ' + e2.message); }
   }
 
-  // ── SPY: try 3 sources ───────────────────────────────────────────────────
+  // ── SPY: try 4 sources ───────────────────────────────────────────────────
   // Source 1: Stooq historical (works during market hours)
   try {
     const r = await get('https://stooq.com/q/d/l/?s=spy.us&i=d');
@@ -97,41 +106,44 @@ module.exports = async (req, res) => {
   } catch(e) {
     notes.push('SPY/Stooq: ' + e.message);
 
-    // Source 2: Alpha Vantage (works any time, 25 free calls/day)
-    try {
-      const r = await get(`https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=SPY&outputsize=compact&apikey=${ALPHA_KEY}`);
-      const d = JSON.parse(r.body);
-      if (d.Note || d.Information) throw new Error('Alpha Vantage rate limit: ' + (d.Note || d.Information).slice(0,60));
-      const rows = parseAlphaVantageDaily(d);
-      if (rows.length < 52) throw new Error(`only ${rows.length} rows`);
-      spy = calc50EMA(rows);
-      if (spy) spy.source = 'alphavantage';
-      else throw new Error('EMA calc failed');
-    } catch(e2) {
-      notes.push('SPY/AlphaVantage: ' + e2.message);
-
-      // Source 3: Alpha Vantage GLOBAL_QUOTE (current price, no rate limit issues)
+    // Source 2: Finnhub candles (60 calls/min, reliable)
+    if (FINNHUB_KEY) {
       try {
-        const r = await get(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey=${ALPHA_KEY}`);
-        const d = JSON.parse(r.body);
-        const q = d['Global Quote'];
-        if (!q || !q['05. price']) throw new Error('No quote data: ' + JSON.stringify(d).slice(0,100));
-        const price = parseFloat(q['05. price']);
-        const prev  = parseFloat(q['08. previous close'] || q['05. price']);
-        // Approximate above/below 50 EMA from VIX level
+        const to = Math.floor(Date.now() / 1000);
+        const from = to - 120 * 86400;
+        const r = await get(`https://finnhub.io/api/v1/stock/candle?symbol=SPY&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`);
+        const rows = parseFinnhubCandles(JSON.parse(r.body));
+        if (rows.length < 52) throw new Error(`only ${rows.length} rows`);
+        spy = calc50EMA(rows);
+        if (spy) spy.source = 'finnhub';
+        else throw new Error('EMA calc failed');
+      } catch(e2) {
+        notes.push('SPY/Finnhub candles: ' + e2.message);
+      }
+    }
+
+    // Source 3: Finnhub quote (current price only)
+    if (!spy && FINNHUB_KEY) {
+      try {
+        const r = await get(`https://finnhub.io/api/v1/quote?symbol=SPY&token=${FINNHUB_KEY}`);
+        const q = JSON.parse(r.body);
+        if (!q || !q.c || q.c <= 0) throw new Error('No quote data');
+        const price = q.c;
+        const prev = q.pc || q.c;
         const aboveEMA = vix ? vix.value < 22 : true;
         spy = { price: +price.toFixed(2), change: +(price-prev).toFixed(2),
                 pct: +((price-prev)/prev*100).toFixed(2),
-                ema50: null, above: aboveEMA, pctAbove: null, source: 'alpha-quote' };
-        notes.push('SPY: current price from Alpha Vantage, EMA approximated from VIX');
+                ema50: null, above: aboveEMA, pctAbove: null, source: 'finnhub-quote' };
+        notes.push('SPY: current price from Finnhub, EMA approximated from VIX');
       } catch(e3) {
-        notes.push('SPY/alpha-quote: ' + e3.message);
-        // Final fallback: derive entirely from VIX
-        if (vix) {
-          spy = { price: null, above: vix.value < 22, pctAbove: null, source: 'vix-inferred' };
-          notes.push('SPY: fully inferred from VIX');
-        }
+        notes.push('SPY/Finnhub quote: ' + e3.message);
       }
+    }
+
+    // Source 4: Final fallback — derive entirely from VIX
+    if (!spy && vix) {
+      spy = { price: null, above: vix.value < 22, pctAbove: null, source: 'vix-inferred' };
+      notes.push('SPY: fully inferred from VIX');
     }
   }
 

@@ -28,13 +28,13 @@ async function fetchMarketData() {
     const last = lines[lines.length-1]?.split(',');
     const vix = last ? parseFloat(last[4]||last[1]) : null;
 
-    // SPY price via Alpha Vantage
-    const ALPHA = process.env.ALPHA_VANTAGE_KEY;
+    // SPY price via Finnhub
+    const FINNHUB = process.env.FINNHUB_KEY;
     let spyPrice=null, spyAbove=null;
-    if (ALPHA) {
-      const sr = await httpsGet(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey=${ALPHA}`);
-      const q = JSON.parse(sr.body)['Global Quote'];
-      spyPrice = q?.['05. price'] ? parseFloat(q['05. price']) : null;
+    if (FINNHUB) {
+      const sr = await httpsGet(`https://finnhub.io/api/v1/quote?symbol=SPY&token=${FINNHUB}`);
+      const q = JSON.parse(sr.body);
+      spyPrice = q && q.c && q.c > 0 ? q.c : null;
       spyAbove = vix ? vix < 22 : null; // approximate
     }
 
@@ -96,23 +96,23 @@ function formatTrade(p) {
   };
 }
 
-// ── Technical Analysis: fetch OHLCV + compute indicators ────────────────
+// ── Technical Analysis: fetch OHLCV via Finnhub candles ─────────────────
 function fetchOHLCV(ticker, apiKey) {
   return new Promise(resolve => {
-    const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${apiKey}`;
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - 120 * 86400; // ~120 days of daily candles
+    const url = `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${apiKey}`;
     https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 }, res => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
         try {
           const json = JSON.parse(d);
-          if (json['Note'] || json['Information']) { resolve(null); return; }
-          const ts = json['Time Series (Daily)'];
-          if (!ts) { resolve(null); return; }
-          const bars = Object.entries(ts).map(([date, v]) => ({
-            date, open: parseFloat(v['1. open']), high: parseFloat(v['2. high']),
-            low: parseFloat(v['3. low']), close: parseFloat(v['4. close']),
-            volume: parseInt(v['5. volume']),
-          })).reverse();
+          if (json.s !== 'ok' || !json.c || !json.c.length) { resolve(null); return; }
+          const bars = json.t.map((ts, i) => ({
+            date: new Date(ts * 1000).toISOString().split('T')[0],
+            open: json.o[i], high: json.h[i], low: json.l[i],
+            close: json.c[i], volume: json.v[i],
+          }));
           resolve(bars);
         } catch { resolve(null); }
       });
@@ -122,13 +122,12 @@ function fetchOHLCV(ticker, apiKey) {
 
 async function fetchTechnicalData(tickers, apiKey) {
   const results = {};
-  for (const ticker of tickers.slice(0, 5)) { // max 5 to conserve API calls
+  for (const ticker of tickers) { // no limit — Finnhub allows 60 calls/min
     const bars = await fetchOHLCV(ticker, apiKey);
     if (bars && bars.length >= 30) {
       results[ticker] = computeAll(bars);
     }
-    // Rate limit delay
-    if (tickers.length > 1) await new Promise(r => setTimeout(r, 400));
+    if (tickers.length > 1) await new Promise(r => setTimeout(r, 250));
   }
   return results;
 }
@@ -215,7 +214,7 @@ module.exports = async (req, res) => {
 
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
   const NOTION_TOKEN  = process.env.NOTION_TOKEN;
-  const ALPHA_KEY     = process.env.ALPHA_VANTAGE_KEY;
+  const ALPHA_KEY     = process.env.FINNHUB_KEY;
 
   if (!ANTHROPIC_KEY) return res.status(503).json({error:'ANTHROPIC_API_KEY not set in Vercel env vars'});
 
@@ -236,7 +235,7 @@ module.exports = async (req, res) => {
 
   // Fetch technical analysis for open positions + SPY
   const openTickers = openFormatted.map(t => t.ticker).filter(Boolean);
-  const taTickers = ['SPY', ...openTickers].slice(0, 5);
+  const taTickers = ['SPY', ...openTickers]; // no limit — Finnhub 60 calls/min
   let taData = {};
   if (ALPHA_KEY) {
     try { taData = await fetchTechnicalData(taTickers, ALPHA_KEY); } catch {}
@@ -411,14 +410,14 @@ Scoring framework additions:
         // ALWAYS fetch live price — never trust Claude's price suggestion
         let price = null;
         try {
-          const pr = await httpsGet(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${opp.ticker}&apikey=${ALPHA_KEY}`);
-          const q = JSON.parse(pr.body)['Global Quote'];
-          price = q?.['05. price'] ? parseFloat(q['05. price']) : null;
+          const pr = await httpsGet(`https://finnhub.io/api/v1/quote?symbol=${opp.ticker}&token=${ALPHA_KEY}`);
+          const q = JSON.parse(pr.body);
+          price = q && q.c && q.c > 0 ? q.c : null;
         } catch{}
 
         // No live price = skip draft but alert
         if (!price) {
-          opp._priceAlert = `PRICE UNAVAILABLE for ${opp.ticker} — draft not created. Check Alpha Vantage API limit (25/day) or verify ticker symbol.`;
+          opp._priceAlert = `PRICE UNAVAILABLE for ${opp.ticker} — draft not created. Check Finnhub API or verify ticker symbol.`;
           opp.reasoning = `🚨 ALERT: ${opp._priceAlert} | ${opp.reasoning}`;
           continue;
         }

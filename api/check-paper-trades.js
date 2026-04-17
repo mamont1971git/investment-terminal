@@ -34,19 +34,19 @@ function notionQuery(dbId, filter, token) {
 }
 async function getPrice(ticker, apiKey) {
   return new Promise(resolve=>{
-    https.get(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${apiKey}`,
-      {headers:{'User-Agent':'Mozilla/5.0'}},
+    https.get(`https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${apiKey}`,
+      {headers:{'User-Agent':'Mozilla/5.0'},timeout:5000},
       res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{
-        try{const q=JSON.parse(d)['Global Quote'];resolve(q?.['05. price']?parseFloat(q['05. price']):null);}
+        try{const q=JSON.parse(d);resolve(q&&q.c&&q.c>0?q.c:null);}
         catch{resolve(null);}
-      });}).on('error',()=>resolve(null));
+      });}).on('error',()=>resolve(null)).on('timeout',function(){this.destroy();resolve(null);});
   });
 }
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin','*');
   const TOKEN = process.env.NOTION_TOKEN;
-  const ALPHA = process.env.ALPHA_VANTAGE_KEY;
+  const ALPHA = process.env.FINNHUB_KEY;
   if (!TOKEN||!ALPHA) return res.status(503).json({error:'Missing env vars'});
 
   // Fetch all open paper trades from Notion
