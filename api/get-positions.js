@@ -3,7 +3,7 @@
 // Also returns closed trades for portfolio stats
 const https = require('https');
 let computeAll;
-try { computeAll = require('./lib/indicators').computeAll; } catch { computeAll = null; }
+try { computeAll = require('./_lib/indicators').computeAll; } catch { computeAll = null; }
 
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 

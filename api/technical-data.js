@@ -11,7 +11,7 @@
  */
 
 const https = require('https');
-const { computeAll } = require('./lib/indicators');
+const { computeAll } = require('./_lib/indicators');
 
 // ─── Notion helpers ─────────────────────────────────────────────────────────
 

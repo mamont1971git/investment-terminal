@@ -8,7 +8,7 @@
 
 const https = require('https');
 const Anthropic = require('@anthropic-ai/sdk');
-const { computeAll } = require('./lib/indicators');
+const { computeAll } = require('./_lib/indicators');
 
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 
