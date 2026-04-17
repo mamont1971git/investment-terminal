@@ -343,14 +343,18 @@ CRITICAL RULES:
 - In your reasoning for each position/opportunity, cite at least 2-3 specific indicator values.
 
 SIGNAL ATTRIBUTION RULES:
-- Every position and opportunity MUST include a "signalAttribution" array.
-- Each entry has: source (exact name from list), weight (0-100, all weights must sum to 100), signal (1 sentence what this source says), verdict (BULLISH/BEARISH/NEUTRAL).
-- "Technical Analysis" is ALWAYS included (it uses the computed indicators above).
-- "CNN Fear & Greed" is included whenever VIX/F&G data is available (even as proxy).
-- Only include other sources if you have specific data for them (from user command or market context).
-- If user mentions congress trades, include "Capitol Trades". If ticker came from Finviz screener, include "Finviz Screener".
-- Weight reflects how much each source contributed to your final score/recommendation.
-- Minimum 2 sources per attribution (Technical + at least one market context source).`;
+- Every position and opportunity MUST include a "signalAttribution" array with ALL 6 core sources.
+- Each entry has: source (exact name from list), weight (0-100, all weights must sum to 100), signal (1 sentence what this source specifically says for THIS ticker), verdict (BULLISH/BEARISH/NEUTRAL/NO_DATA).
+- ALWAYS include ALL of these 6 sources for every ticker:
+  1. "Technical Analysis" — cite specific RSI, MACD, Z-Score, Bollinger, OBV values from computed data above
+  2. "CNN Fear & Greed" — current market sentiment from VIX/F&G. If VIX data available, use it as proxy
+  3. "Capitol Trades" — any known congressional trading activity for this ticker. If none known, say "No recent congressional trades detected" with verdict NO_DATA and weight 0
+  4. "Finviz Screener" — whether this ticker appears in oversold/breakout screeners based on its current technicals. Infer from the computed indicators whether it would show up
+  5. "Earnings Calendar" — proximity to next earnings, whether it's a catalyst or risk. If unknown, estimate from typical schedule
+  6. "Sector Momentum" — how this ticker's sector is performing (tech, gold, healthcare, etc.)
+- Optionally add "World Monitor" (geopolitical risk) or "Insider Activity" if relevant
+- Sources with NO_DATA get weight 0. Remaining weights must sum to 100.
+- The signal field should explain HOW this source affected the analysis — not just state a fact but connect it to the recommendation.`;
 
 
   // Load system prompt from skill
@@ -404,15 +408,23 @@ Scoring framework additions:
   if (NOTION_TOKEN && ALPHA_KEY && analysis.opportunities) {
     for (const opp of analysis.opportunities) {
       if (opp.action === 'BUY' && opp.score >= 65 && opp.ticker) {
-        let price = opp.entryPrice;
-        if (!price) {
-          // Fetch current price
-          try {
-            const pr = await httpsGet(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${opp.ticker}&apikey=${ALPHA_KEY}`);
-            const q = JSON.parse(pr.body)['Global Quote'];
-            price = q?.['05. price'] ? parseFloat(q['05. price']) : null;
-          } catch{}
+        // ALWAYS fetch live price to validate Claude's suggestion
+        let livePrice = null;
+        try {
+          const pr = await httpsGet(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${opp.ticker}&apikey=${ALPHA_KEY}`);
+          const q = JSON.parse(pr.body)['Global Quote'];
+          livePrice = q?.['05. price'] ? parseFloat(q['05. price']) : null;
+        } catch{}
+
+        // Use live price as entry; fall back to Claude's suggestion only if API fails
+        let price = livePrice || opp.entryPrice;
+
+        // Sanity check: if Claude's price differs >15% from live, flag it and use live
+        if (livePrice && opp.entryPrice && Math.abs(livePrice - opp.entryPrice) / livePrice > 0.15) {
+          opp.reasoning = `⚠️ PRICE CORRECTION: Claude suggested $${opp.entryPrice} but live price is $${livePrice.toFixed(2)} (${((livePrice-opp.entryPrice)/opp.entryPrice*100).toFixed(1)}% diff). Using live price. | ${opp.reasoning}`;
+          price = livePrice;
         }
+
         if (price) {
           const draft = await createDraft(
             opp.ticker, opp.strategy, opp.score,
