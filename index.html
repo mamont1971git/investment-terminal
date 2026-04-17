@@ -1294,11 +1294,16 @@ function DailyBrief(){
   const [posStatus,setPosStatus]=useState('idle'); // idle | loading | done | failed
 
   // Evaluation flow state
-  const [evalStatus,setEvalStatus]=useState('idle'); // idle | loading | done | error
-  const [evalResults,setEvalResults]=useState(null); // diagnose mode response
-  const [approvals,setApprovals]=useState({}); // { rec_1: true, rec_2: false, ... }
+  const [evalStatus,setEvalStatus]=useState(()=>{try{return localStorage.getItem('evalStatus')||'idle';}catch(e){return 'idle';}});
+  const [evalResults,setEvalResults]=useState(()=>{try{const s=localStorage.getItem('evalResults');return s?JSON.parse(s):null;}catch(e){return null;}});
+  const [approvals,setApprovals]=useState(()=>{try{const s=localStorage.getItem('evalApprovals');return s?JSON.parse(s):{};}catch(e){return {};}});
   const [applyStatus,setApplyStatus]=useState('idle'); // idle | applying | done | error
   const [autoFix,setAutoFix]=useState(false);
+
+  // Persist eval state to localStorage
+  useEffect(()=>{try{localStorage.setItem('evalStatus',evalStatus);}catch(e){}},[evalStatus]);
+  useEffect(()=>{try{localStorage.setItem('evalResults',evalResults?JSON.stringify(evalResults):'');} catch(e){}},[evalResults]);
+  useEffect(()=>{try{localStorage.setItem('evalApprovals',JSON.stringify(approvals));}catch(e){}},[approvals]);
 
   const fetchPositions=useCallback(async()=>{
     if(window.location.protocol==='file:')return;
