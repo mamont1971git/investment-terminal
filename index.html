@@ -401,13 +401,12 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
             )}
           </div>
         </div>
-        {/* price grid */}
-        <div className="grid grid-cols-5 gap-2 mb-2">
+        {/* price grid — info only */}
+        <div className="grid grid-cols-4 gap-2 mb-2">
           {[
             {l:'Entry',v:`$${fmt(t.entryPrice)}`,bg:'#0f1828',c:'#e2e8f0'},
             {l:'Current',v:t.currentPrice?`$${fmt(t.currentPrice)}`:'—',bg:'#0f1828',c:pnl!=null?(pnl>0?'#4ade80':'#f87171'):'#94a3b8'},
             {l:'Stop',v:`$${fmt(t.stopLoss)}`,bg:'#1a0c0c',c:'#f87171'},
-            {l:'TP1',v:`$${fmt(tp1)}`,bg:'#0a1a0d',c:'#4ade80'},
             {l:'Days',v:t.daysHeld!=null?t.daysHeld:'—',bg:'#0f1828',c:t.daysHeld>=8?'#f59e0b':'#94a3b8'},
           ].map((b,i)=>(
             <div key={i} className="rounded-xl p-2 text-center"style={{background:b.bg}}>
@@ -416,26 +415,9 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
             </div>
           ))}
         </div>
-        {/* profit at each level */}
+        {/* position sizing info */}
         {shares>0&&(
-          <div className="rounded-xl p-2 mb-2"style={{background:'#0f1828'}}>
-            <div className="text-xs text-gray-600 mb-1">{shares} shares · {posPct}% of portfolio (${fmt(posValue,0)})</div>
-            <div className="grid grid-cols-4 gap-2 text-center">
-              {[
-                {l:'Stop',v:stopLossProfit,c:'#f87171',pct:t.entryPrice?((t.stopLoss-t.entryPrice)/t.entryPrice*100):null},
-                {l:'TP1 (+8%)',v:tp1Profit,c:'#4ade80',pct:8},
-                {l:'TP2 (+15%)',v:tp2Profit,c:'#22c55e',pct:15},
-                {l:'TP3 (+22%)',v:tp3Profit,c:'#16a34a',pct:22},
-              ].map((p,i)=>(
-                <div key={i}>
-                  <div className="text-xs"style={{color:'#475569'}}>{p.l}</div>
-                  <div className="font-bold text-xs"style={{color:p.c}}>
-                    {p.v!=null?(p.v>0?'+':'')+`$${fmt(Math.abs(p.v),0)}`:'—'}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <div className="text-xs text-gray-600 mb-2 px-1">{shares} shares · {posPct}% of portfolio (${fmt(posValue,0)})</div>
         )}
         {/* technical indicators panel */}
         {t.indicators&&(
@@ -500,32 +482,61 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
             <span>TP1 ${fmt(tp1)}</span>
           </div>
         )}
-        {/* ── interactive action buttons ── */}
-        <div className="flex gap-2 flex-wrap">
-          <button onClick={()=>handleClose('take_profit_1','Take Profit at TP1')}
-            disabled={!!closing}
-            className="flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold transition-all hover:opacity-80 disabled:opacity-40"
-            style={{background:'#0a1a0d',color:'#22c55e',border:'1px solid #22c55e44'}}>
-            {closing==='take_profit_1'?<><Spin/>Closing…</>:<>💰 TP1 {tp1Profit!=null&&`(+$${fmt(tp1Profit,0)})`}</>}
-          </button>
-          <button onClick={()=>handleClose('take_profit_2','Take Profit at TP2')}
-            disabled={!!closing}
-            className="flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold transition-all hover:opacity-80 disabled:opacity-40"
-            style={{background:'#0a1a0d',color:'#16a34a',border:'1px solid #16a34a44'}}>
-            {closing==='take_profit_2'?<><Spin/>Closing…</>:<>💰 TP2 {tp2Profit!=null&&`(+$${fmt(tp2Profit,0)})`}</>}
-          </button>
-          <button onClick={()=>handleClose('exit_now','Exit Now')}
-            disabled={!!closing}
-            className="flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold transition-all hover:opacity-80 disabled:opacity-40"
-            style={{background:'#1a0808',color:'#ef4444',border:'1px solid #ef444444'}}>
-            {closing==='exit_now'?<><Spin/>Closing…</>:<>🚨 Exit Now {currentProfit!=null&&`(${currentProfit>0?'+':''}$${fmt(currentProfit,0)})`}</>}
-          </button>
-          <button onClick={()=>handleClose('stopped_out','Mark as Stopped Out')}
-            disabled={!!closing}
-            className="flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold transition-all hover:opacity-80 disabled:opacity-40"
-            style={{background:'#1a0c08',color:'#f59e0b',border:'1px solid #f59e0b44'}}>
-            {closing==='stopped_out'?<><Spin/>Closing…</>:'⛔ Stopped Out'}
-          </button>
+        {/* ── ACTIONS — close this position ── */}
+        <div className="rounded-xl p-3 mb-1"style={{background:'#0d1120',border:'1px solid #1e2d4a'}}>
+          <div className="text-xs font-bold text-gray-500 mb-2">CLOSE POSITION</div>
+          <div className="grid grid-cols-2 gap-2">
+            {/* TP1 button */}
+            <button onClick={()=>handleClose('take_profit_1',`Take Profit at TP1 ($${fmt(tp1)})`)}
+              disabled={!!closing}
+              className="flex flex-col items-center gap-0.5 px-3 py-2.5 rounded-xl text-xs font-bold transition-all hover:opacity-80 disabled:opacity-40"
+              style={{background:'#0a1a0d',border:'1px solid #22c55e44'}}>
+              {closing==='take_profit_1'?<><Spin/><span style={{color:'#22c55e'}}>Closing…</span></>:<>
+                <span style={{color:'#22c55e'}}>💰 TP1 @ ${fmt(tp1)}</span>
+                <span style={{color:'#4ade80',fontSize:'10px'}}>
+                  {t.entryPrice?`+${fmt((tp1-t.entryPrice)/t.entryPrice*100,1)}%`:''}
+                  {tp1Profit!=null&&` · +$${fmt(tp1Profit,0)}`}
+                </span>
+              </>}
+            </button>
+            {/* TP2 button */}
+            <button onClick={()=>handleClose('take_profit_2',`Take Profit at TP2 ($${fmt(tp2)})`)}
+              disabled={!!closing}
+              className="flex flex-col items-center gap-0.5 px-3 py-2.5 rounded-xl text-xs font-bold transition-all hover:opacity-80 disabled:opacity-40"
+              style={{background:'#0a1a0d',border:'1px solid #16a34a44'}}>
+              {closing==='take_profit_2'?<><Spin/><span style={{color:'#16a34a'}}>Closing…</span></>:<>
+                <span style={{color:'#16a34a'}}>💰 TP2 @ ${fmt(tp2)}</span>
+                <span style={{color:'#22c55e',fontSize:'10px'}}>
+                  {t.entryPrice?`+${fmt((tp2-t.entryPrice)/t.entryPrice*100,1)}%`:''}
+                  {tp2Profit!=null&&` · +$${fmt(tp2Profit,0)}`}
+                </span>
+              </>}
+            </button>
+            {/* Exit Now button */}
+            <button onClick={()=>handleClose('exit_now','Exit Now at market price')}
+              disabled={!!closing}
+              className="flex flex-col items-center gap-0.5 px-3 py-2.5 rounded-xl text-xs font-bold transition-all hover:opacity-80 disabled:opacity-40"
+              style={{background:'#1a0808',border:'1px solid #ef444444'}}>
+              {closing==='exit_now'?<><Spin/><span style={{color:'#ef4444'}}>Closing…</span></>:<>
+                <span style={{color:'#ef4444'}}>🚨 Exit Now {t.currentPrice?`@ $${fmt(t.currentPrice)}`:''}</span>
+                <span style={{color:currentProfit!=null&&currentProfit>0?'#4ade80':'#f87171',fontSize:'10px'}}>
+                  {currentProfit!=null?`${currentProfit>0?'+':''}$${fmt(currentProfit,0)}`:'at market'}
+                </span>
+              </>}
+            </button>
+            {/* Stopped Out button */}
+            <button onClick={()=>handleClose('stopped_out',`Mark as Stopped Out @ $${fmt(t.stopLoss)}`)}
+              disabled={!!closing}
+              className="flex flex-col items-center gap-0.5 px-3 py-2.5 rounded-xl text-xs font-bold transition-all hover:opacity-80 disabled:opacity-40"
+              style={{background:'#1a0c08',border:'1px solid #f59e0b44'}}>
+              {closing==='stopped_out'?<><Spin/><span style={{color:'#f59e0b'}}>Closing…</span></>:<>
+                <span style={{color:'#f59e0b'}}>⛔ Stopped Out @ ${fmt(t.stopLoss)}</span>
+                <span style={{color:'#f87171',fontSize:'10px'}}>
+                  {stopLossProfit!=null&&`${fmt(stopLossProfit,0)>0?'+':''}$${fmt(stopLossProfit,0)}`}
+                </span>
+              </>}
+            </button>
+          </div>
         </div>
       </div>
     </div>
