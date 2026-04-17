@@ -17,6 +17,7 @@ try { runDiagnostics = require('./_lib/diagnostics').runDiagnostics; } catch { r
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
 const TUNING_DB = 'c326714ad2b748878e94c473760c97e3';
+const EVAL_DB = 'c40a61dee0154f38960fd27fe272531d';
 
 function notionQuery(filter, sorts, token, pageSize=50) {
   return new Promise((resolve, reject) => {
@@ -403,6 +404,125 @@ module.exports = async (req, res) => {
         req.on('error', () => resolve(res.status(500).json({ error: 'Network error' })));
         req.write(body); req.end();
       });
+    }
+
+    // Route: save evaluation report to staging DB
+    if (parsed.action === 'eval_save') {
+      const report = parsed.report;
+      if (!report) return res.status(400).json({ error: 'report required' });
+      const today = new Date().toISOString().split('T')[0];
+      const approvalsJson = JSON.stringify(parsed.approvals || {});
+      const isNewRun = !!parsed.newRun; // true when fresh evaluation, false for approval updates
+
+      // Helper: PATCH a Notion page
+      function patchPage(pageId, properties) {
+        return new Promise(resolve => {
+          const body = JSON.stringify({ properties });
+          const req = https.request({
+            hostname: 'api.notion.com', path: `/v1/pages/${pageId}`, method: 'PATCH',
+            headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) },
+          }, r => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve(null);}}); });
+          req.on('error',()=>resolve(null)); req.write(body); req.end();
+        });
+      }
+
+      // Check for existing Active report
+      let existingId = null;
+      try {
+        const existing = await notionQueryDB(EVAL_DB,
+          { property: 'Status', select: { equals: 'Active' } },
+          [{ property: 'Run Date', direction: 'descending' }], TOKEN, 10);
+        if (existing.results && existing.results.length > 0) {
+          if (isNewRun) {
+            // Archive all existing Active reports
+            for (const page of existing.results) {
+              await patchPage(page.id, { 'Status': { select: { name: 'Archived' } } });
+            }
+          } else {
+            existingId = existing.results[0].id;
+          }
+        }
+      } catch(e) { /* continue */ }
+
+      // If just updating approvals on existing report, PATCH only approvals
+      if (existingId && !isNewRun) {
+        const patched = await patchPage(existingId, {
+          'Approvals': { rich_text: [{ text: { content: approvalsJson.slice(0, 2000) } }] },
+        });
+        return res.json({ ok: true, evalId: existingId, updated: true });
+      }
+
+      // Create new report
+      const recsJson = JSON.stringify(report.recommendations || []);
+      const posJson = JSON.stringify(report.positives || []);
+      const weightsJson = JSON.stringify(report.sourceWeights || {});
+      const props = {
+        'Report': { title: [{ text: { content: `Eval ${today}` } }] },
+        'Grade': { select: { name: (report.grade || 'C').toUpperCase() } },
+        'Risk Score': { number: report.riskScore || 0 },
+        'Trades Analyzed': { number: report.tradesAnalyzed || 0 },
+        'Status': { select: { name: 'Active' } },
+        'Recommendations': { rich_text: [{ text: { content: recsJson.slice(0, 2000) } }] },
+        'Positives': { rich_text: [{ text: { content: posJson.slice(0, 2000) } }] },
+        'Source Weights': { rich_text: [{ text: { content: weightsJson.slice(0, 2000) } }] },
+        'Run Date': { date: { start: today } },
+        'Approvals': { rich_text: [{ text: { content: approvalsJson.slice(0, 2000) } }] },
+      };
+      const body = JSON.stringify({ parent: { database_id: EVAL_DB }, properties: props });
+      return new Promise(resolve => {
+        const req = https.request({
+          hostname: 'api.notion.com', path: '/v1/pages', method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) },
+        }, response => {
+          let d=''; response.on('data',c=>d+=c);
+          response.on('end',()=>{
+            try {
+              const r=JSON.parse(d);
+              if(response.statusCode<300) resolve(res.json({ok:true,evalId:r.id}));
+              else resolve(res.status(400).json({error:r.message||'Failed to save eval',detail:r}));
+            } catch{ resolve(res.status(500).json({error:'Parse error'})); }
+          });
+        });
+        req.on('error',()=>resolve(res.status(500).json({error:'Network error'})));
+        req.write(body); req.end();
+      });
+    }
+
+    // Route: load latest evaluation report from staging DB
+    if (parsed.action === 'eval_load') {
+      try {
+        const result = await notionQueryDB(EVAL_DB,
+          { property: 'Status', select: { equals: 'Active' } },
+          [{ property: 'Run Date', direction: 'descending' }], TOKEN, 1);
+        if (!result.results || result.results.length === 0) {
+          return res.json({ found: false });
+        }
+        const page = result.results[0];
+        const p = page.properties;
+        let recs=[], positives=[], weights={}, approvals={};
+        try { recs = JSON.parse(p['Recommendations']?.rich_text?.[0]?.plain_text || '[]'); } catch{}
+        try { positives = JSON.parse(p['Positives']?.rich_text?.[0]?.plain_text || '[]'); } catch{}
+        try { weights = JSON.parse(p['Source Weights']?.rich_text?.[0]?.plain_text || '{}'); } catch{}
+        try { approvals = JSON.parse(p['Approvals']?.rich_text?.[0]?.plain_text || '{}'); } catch{}
+        return res.json({
+          found: true,
+          evalId: page.id,
+          report: {
+            grade: p['Grade']?.select?.name || 'C',
+            riskScore: p['Risk Score']?.number || 0,
+            tradesAnalyzed: p['Trades Analyzed']?.number || 0,
+            recommendations: recs,
+            positives: positives,
+            sourceWeights: weights,
+            runDate: p['Run Date']?.date?.start || '',
+          },
+          approvals: approvals,
+        });
+      } catch(e) {
+        return res.status(500).json({ error: 'Failed to load eval', detail: e.message });
+      }
     }
 
     // Route: sync positions (existing)

@@ -1294,16 +1294,46 @@ function DailyBrief(){
   const [posStatus,setPosStatus]=useState('idle'); // idle | loading | done | failed
 
   // Evaluation flow state
-  const [evalStatus,setEvalStatus]=useState(()=>{try{return localStorage.getItem('evalStatus')||'idle';}catch(e){return 'idle';}});
-  const [evalResults,setEvalResults]=useState(()=>{try{const s=localStorage.getItem('evalResults');return s?JSON.parse(s):null;}catch(e){return null;}});
-  const [approvals,setApprovals]=useState(()=>{try{const s=localStorage.getItem('evalApprovals');return s?JSON.parse(s):{};}catch(e){return {};}});
-  const [applyStatus,setApplyStatus]=useState('idle'); // idle | applying | done | error
+  const [evalStatus,setEvalStatus]=useState('idle');
+  const [evalResults,setEvalResults]=useState(null);
+  const [approvals,setApprovals]=useState({});
+  const [applyStatus,setApplyStatus]=useState('idle');
   const [autoFix,setAutoFix]=useState(false);
+  const [evalPageId,setEvalPageId]=useState(null); // Notion page ID of active eval report
 
-  // Persist eval state to localStorage
-  useEffect(()=>{try{localStorage.setItem('evalStatus',evalStatus);}catch(e){}},[evalStatus]);
-  useEffect(()=>{try{localStorage.setItem('evalResults',evalResults?JSON.stringify(evalResults):'');} catch(e){}},[evalResults]);
-  useEffect(()=>{try{localStorage.setItem('evalApprovals',JSON.stringify(approvals));}catch(e){}},[approvals]);
+  // Load latest eval report from Notion staging DB on mount
+  useEffect(()=>{
+    if(window.location.protocol==='file:')return;
+    (async()=>{
+      try{
+        const r=await fetch('/api/get-positions',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'eval_load'})
+        });
+        const d=await r.json();
+        if(d.found&&d.report){
+          setEvalResults(d.report);
+          setApprovals(d.approvals||{});
+          setEvalPageId(d.evalId);
+          setEvalStatus('done');
+        }
+      }catch(e){/* no saved eval, stay idle */}
+    })();
+  },[]);
+
+  // Debounced save of approval changes to Notion staging DB
+  const approvalsRef=useRef(approvals);
+  approvalsRef.current=approvals;
+  useEffect(()=>{
+    if(!evalResults||evalStatus!=='done'||window.location.protocol==='file:')return;
+    const t=setTimeout(()=>{
+      fetch('/api/get-positions',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'eval_save',report:evalResults,approvals:approvalsRef.current})
+      }).catch(()=>{});
+    },1500); // 1.5s debounce
+    return()=>clearTimeout(t);
+  },[approvals,evalResults,evalStatus]);
 
   const fetchPositions=useCallback(async()=>{
     if(window.location.protocol==='file:')return;
@@ -1354,13 +1384,22 @@ function DailyBrief(){
       const d=await r.json();
       if(d.parseError){setEvalStatus('error');return;}
       setEvalResults(d);
+      let initApprovals={};
       // Pre-approve all if autoFix is on
       if(autoFix&&d.recommendations){
-        const auto={};
-        d.recommendations.forEach(r=>{auto[r.id]=true;});
-        setApprovals(auto);
+        d.recommendations.forEach(r=>{initApprovals[r.id]=true;});
       }
+      setApprovals(initApprovals);
       setEvalStatus('done');
+      // Persist to Notion staging DB
+      try{
+        const saveR=await fetch('/api/get-positions',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'eval_save',report:d,approvals:initApprovals,newRun:true})
+        });
+        const saveD=await saveR.json();
+        if(saveD.evalId)setEvalPageId(saveD.evalId);
+      }catch(e){/* save failed, results still in state */}
     }catch(e){
       logError('EVAL_ERROR',e.message,{});
       setEvalStatus('error');
