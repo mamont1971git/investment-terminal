@@ -1468,7 +1468,21 @@ function Journal({onBack,notionTrades}){
                 {t.stopLoss&&<span>SL: ${t.stopLoss}</span>}
                 <span>{t.dateOpened}</span>
               </div>
-              {!t.rulesFollowed&&<div className="text-xs text-red-500 mt-1">⚠️ Rules violated</div>}
+              {!t.rulesFollowed&&(
+                <div className="text-xs text-red-500 mt-1 leading-relaxed">
+                  <span className="font-bold">⚠️ Rules violated:</span>
+                  {' '}
+                  {(()=>{
+                    const violations=[];
+                    if(t.score&&t.score<65)violations.push(`Score ${t.score} below 65 entry threshold`);
+                    if(t.positionPct&&t.positionPct>5)violations.push(`Position ${t.positionPct}% exceeds 5% max`);
+                    if(!t.stopLoss)violations.push('No stop-loss set');
+                    if(t.entryPrice&&t.stopLoss&&((t.entryPrice-t.stopLoss)/t.entryPrice)>0.10)violations.push('Stop-loss >10% from entry');
+                    if(t.wrong)violations.push(t.wrong);
+                    return violations.length?violations.join(' · '):'Marked manually — check trade notes';
+                  })()}
+                </div>
+              )}
               {t.lesson&&<div className="text-xs text-indigo-400 mt-1">💡 {t.lesson}</div>}
             </Card>
           ))}
