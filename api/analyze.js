@@ -21,6 +21,83 @@ function httpsGet(url, headers={}) {
   });
 }
 
+// ── World Monitor: live geopolitical + macro intelligence ───────────────
+async function fetchWorldMonitor() {
+  const WM = 'https://api.worldmonitor.app';
+  const results = { macroSignals: null, fearGreed: null, geopolitical: null, newsHeadlines: null };
+  try {
+    // Fetch all 4 endpoints in parallel — free, no auth needed
+    const [macroR, fgR, simR, newsR] = await Promise.all([
+      httpsGet(`${WM}/api/economic/v1/get-macro-signals`),
+      httpsGet(`${WM}/api/market/v1/get-fear-greed-index`),
+      httpsGet(`${WM}/api/forecast/v1/get-simulation-outcome`),
+      httpsGet(`${WM}/api/news/v1/list-feed-digest?variant=full&lang=en`),
+    ]);
+
+    // 1. Macro Signals — verdict, bullish count, signal statuses
+    try {
+      const macro = JSON.parse(macroR.body);
+      const signals = {};
+      for (const [k, v] of Object.entries(macro.signals || {})) {
+        const { sparkline, history, ...rest } = v; // strip large arrays
+        signals[k] = rest;
+      }
+      results.macroSignals = {
+        timestamp: macro.timestamp,
+        verdict: macro.verdict,
+        bullishCount: macro.bullishCount,
+        totalCount: macro.totalCount,
+        signals,
+      };
+    } catch {}
+
+    // 2. Fear & Greed Composite — score + component breakdown
+    try {
+      const fg = JSON.parse(fgR.body);
+      const components = {};
+      for (const key of ['sentiment','volatility','positioning','breadth','momentum','safe_haven','options']) {
+        if (fg[key]) {
+          components[key] = { score: fg[key].score, weight: fg[key].weight, contribution: fg[key].contribution };
+          try { components[key].inputs = JSON.parse(fg[key].inputsJson); } catch {}
+        }
+      }
+      results.fearGreed = {
+        compositeScore: fg.compositeScore,
+        compositeLabel: fg.compositeLabel,
+        seededAt: fg.seededAt,
+        components,
+      };
+    } catch {}
+
+    // 3. Geopolitical Forecast — active threat theaters
+    try {
+      const sim = JSON.parse(simR.body);
+      const theaters = JSON.parse(sim.theaterSummariesJson || '[]');
+      results.geopolitical = {
+        generatedAt: sim.generatedAt ? new Date(sim.generatedAt).toISOString() : null,
+        theaterCount: sim.theaterCount,
+        theaters: theaters.map(t => ({ id: t.theaterId, label: t.theaterLabel })),
+      };
+    } catch {}
+
+    // 4. News Headlines — top 3 from finance + geopolitical categories
+    try {
+      const news = JSON.parse(newsR.body);
+      const cats = news.categories || {};
+      const headlines = [];
+      for (const cat of ['finance', 'us', 'middleeast', 'europe', 'politics']) {
+        const items = cats[cat]?.items || [];
+        for (const item of items.slice(0, 3)) {
+          headlines.push({ category: cat, title: item.title, source: item.source });
+        }
+      }
+      results.newsHeadlines = headlines.slice(0, 12); // cap at 12 headlines
+    } catch {}
+  } catch {} // outer catch — if entire WM is down, proceed without it
+
+  return results;
+}
+
 async function fetchMarketData() {
   try {
     const r = await httpsGet(`https://stooq.com/q/d/l/?s=%5EVIX&i=d`);
@@ -250,10 +327,11 @@ module.exports = async (req, res) => {
 
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick';
-  const [market, openTrades, closedTrades] = await Promise.all([
+  const [market, openTrades, closedTrades, worldMonitor] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
     (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
+    fetchWorldMonitor(),
   ]);
 
   const openFormatted = openTrades.map(formatTrade);
@@ -277,14 +355,67 @@ module.exports = async (req, res) => {
     }
   }
 
+  // Build World Monitor context block
+  const wm = worldMonitor;
+  let wmContext = '';
+  if (wm.macroSignals || wm.fearGreed || wm.geopolitical || wm.newsHeadlines) {
+    wmContext = '\n\n🌍 WORLD MONITOR — LIVE INTELLIGENCE (worldmonitor.app):\n';
+
+    if (wm.macroSignals) {
+      const ms = wm.macroSignals;
+      wmContext += `\nMACRO SIGNALS (${ms.timestamp}):\n`;
+      wmContext += `  Verdict: ${ms.verdict} (${ms.bullishCount}/${ms.totalCount} bullish)\n`;
+      for (const [name, sig] of Object.entries(ms.signals)) {
+        const details = Object.entries(sig).filter(([k]) => k !== 'status').map(([k,v]) => `${k}=${typeof v==='number'?v.toFixed?.(2)??v:v}`).join(', ');
+        wmContext += `  - ${name}: ${sig.status}${details ? ' ('+details+')' : ''}\n`;
+      }
+    }
+
+    if (wm.fearGreed) {
+      const fg = wm.fearGreed;
+      wmContext += `\nFEAR & GREED COMPOSITE: ${fg.compositeScore} — "${fg.compositeLabel}" (${fg.seededAt})\n`;
+      for (const [name, comp] of Object.entries(fg.components)) {
+        let inputStr = '';
+        if (comp.inputs) {
+          inputStr = ' | ' + Object.entries(comp.inputs).map(([k,v]) => `${k}=${typeof v==='number'?(v.toFixed?.(2)??v):v}`).slice(0, 4).join(', ');
+        }
+        wmContext += `  - ${name}: score=${comp.score} weight=${comp.weight} contribution=${comp.contribution}${inputStr}\n`;
+      }
+    }
+
+    if (wm.geopolitical) {
+      const geo = wm.geopolitical;
+      wmContext += `\nGEOPOLITICAL THREAT THEATERS (${geo.generatedAt}):\n`;
+      if (geo.theaters && geo.theaters.length) {
+        for (const t of geo.theaters) {
+          wmContext += `  ⚠️ ${t.label}\n`;
+        }
+      } else {
+        wmContext += `  No active threat theaters\n`;
+      }
+    }
+
+    if (wm.newsHeadlines && wm.newsHeadlines.length) {
+      wmContext += `\nLIVE NEWS HEADLINES:\n`;
+      for (const h of wm.newsHeadlines) {
+        wmContext += `  [${h.category}] ${h.title} (${h.source||''})\n`;
+      }
+    }
+  }
+
+  // Determine Fear & Greed display — prefer World Monitor composite over CNN
+  const fgDisplay = wm.fearGreed
+    ? `${wm.fearGreed.compositeScore} — "${wm.fearGreed.compositeLabel}" (World Monitor composite, VIX=${wm.fearGreed.components?.volatility?.inputs?.vix || market.vix || '?'})`
+    : (market.vix ? `VIX proxy: ${market.vix.toFixed(2)} (CNN F&G blocked)` : 'unavailable');
+
   // Build market header (shared by both modes)
   const marketHeader = `TODAY: ${today}
 
 LIVE MARKET DATA:
-- VIX: ${market.vix ? market.vix.toFixed(2) : 'unavailable (check finance.yahoo.com/quote/^VIX)'}
-- Fear & Greed: Currently blocked by CNN anti-bot. Use VIX as proxy.
+- VIX: ${market.vix ? market.vix.toFixed(2) : (wm.fearGreed?.components?.volatility?.inputs?.vix || 'unavailable')}
+- Fear & Greed: ${fgDisplay}
 - SPY: ${market.spyPrice ? '$'+market.spyPrice.toFixed(2) : 'unavailable'} | Above 50 EMA: ${taData.SPY?.emaAlignment ? (taData.SPY.emaAlignment.above50?'YES':'NO') + ' (computed: price $'+taData.SPY.price+' vs EMA50 $'+taData.SPY.emaAlignment.ema50+')' : market.spyAbove===null?'approx from VIX':market.spyAbove?'YES':'NO'}
-${taContext}
+${taContext}${wmContext}
 
 OPEN PAPER TRADES (${openFormatted.length}):
 ${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}`;
@@ -322,6 +453,7 @@ RULES:
 - Focus on position status and regime. No new opportunities in quick mode.
 - Every position needs a specific recommendation with reasoning.
 - Use the COMPUTED TECHNICAL INDICATORS — cite specific values.
+- Use WORLD MONITOR data — reference macro verdict, F&G composite, and any active geopolitical threats.
 - If any position is near its stop-loss or TP1, flag urgency as "urgent" or "watch".`;
 
   // ── FULL MODE: Sonnet — deep analysis with attribution ─────────────────
@@ -404,14 +536,15 @@ CRITICAL RULES:
 SIGNAL ATTRIBUTION RULES:
 - Every position and opportunity MUST include a "signalAttribution" array with ALL 6 core sources.
 - Each entry has: source (exact name from list), weight (0-100, all weights must sum to 100), signal (1 sentence what this source specifically says for THIS ticker), verdict (BULLISH/BEARISH/NEUTRAL/NO_DATA).
-- ALWAYS include ALL of these 6 sources for every ticker:
+- ALWAYS include ALL of these 7 sources for every ticker:
   1. "Technical Analysis" — cite specific RSI, MACD, Z-Score, Bollinger, OBV values from computed data above
   2. "CNN Fear & Greed" — current market sentiment from VIX/F&G. If VIX data available, use it as proxy
   3. "Capitol Trades" — any known congressional trading activity for this ticker. If none known, say "No recent congressional trades detected" with verdict NO_DATA and weight 0
   4. "Finviz Screener" — whether this ticker appears in oversold/breakout screeners based on its current technicals. Infer from the computed indicators whether it would show up
   5. "Earnings Calendar" — proximity to next earnings, whether it's a catalyst or risk. If unknown, estimate from typical schedule
   6. "Sector Momentum" — how this ticker's sector is performing (tech, gold, healthcare, etc.)
-- Optionally add "World Monitor" (geopolitical risk) or "Insider Activity" if relevant
+  7. "World Monitor" — MANDATORY. Use the World Monitor live intelligence above: macro signals verdict, geopolitical threat theaters, fear/greed composite breakdown, and news headlines. This is REAL LIVE DATA — cite specific values (e.g., macro verdict, theater names, F&G composite score).
+- Optionally add "Insider Activity" if relevant
 - Sources with NO_DATA get weight 0. Remaining weights must sum to 100.
 - The signal field should explain HOW this source affected the analysis — not just state a fact but connect it to the recommendation.`;
 
@@ -425,6 +558,8 @@ Check each open position against its stop-loss and take-profit levels using the 
   const fullSystemPrompt = `You are Daniel's personal investment analyst. Apply the composite scoring framework rigorously. Return only valid JSON, no markdown.
 
 You have access to COMPUTED technical indicators (RSI, MACD, Bollinger Bands, ATR, OBV, Z-Score, Stochastic, Williams %R, CCI, Fibonacci retracement, SMA/EMA alignment) calculated from real OHLCV price data. ALWAYS reference these computed values in your analysis — do not estimate or guess indicator values when real data is provided.
+
+You also have LIVE World Monitor intelligence: macro signals with a machine-generated BUY/SELL/HOLD verdict, a composite Fear & Greed index with VIX/put-call/breadth inputs, active geopolitical threat theaters, and live news headlines. This is REAL-TIME data — incorporate it into every analysis. World Monitor is a MANDATORY signal source for attribution.
 
 Scoring framework additions:
 - Z-Score < -2: +3pts to Technical Setup (statistically extreme oversold)
@@ -489,6 +624,12 @@ Scoring framework additions:
   analysis._attributionSync = attributionUpdates;
   analysis._mode = mode;
   analysis._model = modelId;
+  analysis._worldMonitor = {
+    macroVerdict: wm.macroSignals?.verdict || null,
+    fearGreed: wm.fearGreed ? `${wm.fearGreed.compositeScore} (${wm.fearGreed.compositeLabel})` : null,
+    geoTheaters: wm.geopolitical?.theaters?.map(t => t.label) || [],
+    newsCount: wm.newsHeadlines?.length || 0,
+  };
 
   // Auto-create Order Drafts for BUY opportunities with score ≥ 65
   // Skip tickers that already have open positions to prevent duplicates
