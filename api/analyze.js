@@ -1090,14 +1090,26 @@ Respond with JSON (no markdown):
   "riskScore": number_1_to_10
 }
 
-CRITICAL RULES:
-- Be specific. "Adjust scoring" is useless. "Raise draft threshold from 65 to 75 in Caution Zone regimes" is actionable.
-- Every recommendation MUST have paramBefore and paramAfter — these will be used to apply fixes.
-- Challenge the scoring model, the signal source weights, the stop-loss methodology, the position sizing — everything.
-- If the system is doing well, say so — but still find 2-3 things to improve.
+QUALITY GATES — MANDATORY FILTERING:
+You are an autonomous system. Your recommendations will be AUTOMATICALLY APPLIED without human review. This means you MUST self-filter aggressively. Only output recommendations that pass ALL of these gates:
+
+1. STATISTICAL SIGNIFICANCE: Do NOT recommend parameter changes based on fewer than 5 supporting data points. If you only have 1-2 trades in a category, the pattern is anecdotal, not actionable. State this in your reasoning and EXCLUDE the rec.
+2. EVIDENCE OVER INTUITION: Every recommendation must cite specific trade outcomes (tickers, P&L, dates). "This seems like it would help" is not evidence. If you can't point to specific trades that would have gone differently, EXCLUDE the rec.
+3. NO ARBITRARY WEIGHTS: Do NOT propose signal source weight changes unless you have win-rate-by-source data showing statistically significant differences. Equal weights with MWU organic adjustment is the correct approach during data collection phase.
+4. CONFLICT CHECK: Do NOT recommend changes that would invalidate current open positions. Check the open positions list — if a rec would trigger an immediate stop-loss or force-close on an open position, EXCLUDE it or defer it with "applyAfter" field.
+5. ACTIONABLE & SPECIFIC: "Adjust scoring" is useless. "Raise draft threshold from 65 to 72 for Earnings Catalyst strategy based on 3/4 sub-70 entries losing money" is actionable.
+
+Each recommendation must include:
+- "qualityScore": 1-10 (your confidence this will improve outcomes based on evidence)
+- "applyAfter": null (apply immediately) OR ISO date string (defer until after this date, e.g. after earnings season)
+- Only output recs with qualityScore >= 6. Drop anything below — it's noise.
+
+ADDITIONAL RULES:
+- Every recommendation MUST have paramBefore and paramAfter — these will be auto-applied.
 - Do NOT recommend things outside the system's control (e.g., "get better data"). Focus on tunable parameters.
 - Categories must be one of: regime, strategy, stop-loss, signal-weights, position-sizing, scoring, diversification, timing
-- Each recommendation needs a unique id starting with "rec_"`;
+- Each recommendation needs a unique id starting with "rec_"
+- If the system is performing well and you cannot find 6+ quality recs, output FEWER. Quality over quantity. Even zero recs is valid if nothing meets the quality gates.`;
   }
 
   const context = isDiagnoseMode ? diagnoseContext : (isDiscoverMode ? discoverContext : (isAssessMode ? assessContext : (isQuick ? quickContext : fullContext)));
