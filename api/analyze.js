@@ -22,6 +22,32 @@ function httpsGet(url, headers={}) {
   });
 }
 
+// ── Finviz Screener: find underrated/unusual volume stocks ─────────────
+async function fetchFinvizSignals() {
+  const screens = {
+    oversoldValue: 'v=111&f=cap_midover,fa_pe_u15,sh_relvol_o1.5,ta_rsi_os40&ft=4&o=-relativevolume',
+    insiderBuying: 'v=111&f=cap_midover,it_latestbuys&ft=4&o=-change',
+    unusualVolume: 'v=111&f=cap_midover,sh_relvol_o3,ta_change_u&ft=4&o=-relativevolume',
+    oversoldBounce: 'v=111&f=cap_midover,ta_rsi_os30,ta_change_u1&ft=4&o=rsi',
+  };
+  const results = {};
+  for (const [name, params] of Object.entries(screens)) {
+    try {
+      const r = await httpsGet(`https://finviz.com/screener.ashx?${params}`, {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'text/html',
+      });
+      // Extract tickers from HTML table — look for ticker links
+      const tickerMatches = r.body.match(/screener-link-primary"[^>]*>([A-Z]{1,5})<\/a>/g) || [];
+      results[name] = tickerMatches.slice(0, 8).map(m => {
+        const t = m.match(/>([A-Z]{1,5})</);
+        return t ? t[1] : null;
+      }).filter(Boolean);
+    } catch { results[name] = []; }
+  }
+  return results;
+}
+
 // ── World Monitor: live geopolitical + macro intelligence ───────────────
 async function fetchWorldMonitor() {
   const WM = 'https://api.worldmonitor.app';
@@ -417,14 +443,19 @@ module.exports = async (req, res) => {
   const assessThesis = parsed.thesis || '';
   const isAssessMode = !!assessTicker;
 
+  // Detect discovery mode
+  const isDiscoverMode = mode === 'discover' || /discover|find.*underrated|hidden.*gems/i.test(command);
+  const discoverFocus = parsed.focus || ''; // e.g. "tech", "energy", "value", "momentum"
+
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick' && !isAssessMode;
-  const [market, openTrades, closedTrades, worldMonitor, walletState] = await Promise.all([
+  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
     (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
     fetchWorldMonitor(),
     NOTION_TOKEN ? fetchWalletState(NOTION_TOKEN) : Promise.resolve({ cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 }),
+    isDiscoverMode ? fetchFinvizSignals() : Promise.resolve(null),
   ]);
 
   const openFormatted = openTrades.map(formatTrade);
@@ -435,6 +466,13 @@ module.exports = async (req, res) => {
   const openTickers = openFormatted.map(t => t.ticker).filter(Boolean);
   const taTickers = ['SPY', ...openTickers];
   if (assessTicker && !taTickers.includes(assessTicker)) taTickers.push(assessTicker);
+  // In discover mode, fetch TA for top screener candidates
+  if (finvizSignals) {
+    const allScreenerTickers = [...new Set(Object.values(finvizSignals).flat())];
+    for (const t of allScreenerTickers.slice(0, 6)) { // limit to 6 to respect rate limits
+      if (!taTickers.includes(t)) taTickers.push(t);
+    }
+  }
   let taData = {};
   if (ALPHA_KEY) {
     try { taData = await fetchTechnicalData(taTickers, ALPHA_KEY); } catch {}
@@ -740,7 +778,72 @@ CRITICAL:
 - Be brutally honest. If the thesis is wrong, say so. Score below 40 = AVOID.
 ${attributionRulesText}` : null;
 
-  const context = isAssessMode ? assessContext : (isQuick ? quickContext : fullContext);
+  // ── DISCOVER MODE: find underrated tickers ────────────────────────────
+  const discoverContext = isDiscoverMode ? `${marketHeader}
+
+🔍 DISCOVERY MODE — Find Underrated/Overlooked Stocks
+${discoverFocus ? `FOCUS: ${discoverFocus}` : 'BROAD SEARCH — look across all sectors'}
+
+FINVIZ SCREENER SIGNALS (live):
+${finvizSignals ? Object.entries(finvizSignals).map(([screen, tickers]) =>
+  `  ${screen}: ${tickers.length ? tickers.join(', ') : 'none found'}`
+).join('\n') : '  Screener data unavailable'}
+
+${Object.keys(taData).filter(t => t !== 'SPY' && !openTickers.includes(t)).length > 0 ?
+  'TECHNICAL DATA FOR SCREENER CANDIDATES:\n' +
+  Object.entries(taData).filter(([t]) => t !== 'SPY' && !openTickers.includes(t))
+    .map(([ticker, ta]) => `${ticker}:\n${formatTA(ta)}`).join('\n\n')
+  : ''}
+
+ALREADY HELD (skip these): ${openTickers.join(', ') || 'none'}
+
+YOUR TASK: Identify 3-5 UNDERRATED stocks that are:
+1. NOT already held in the portfolio
+2. Showing early accumulation signals (unusual volume, insider buying, oversold RSI bounce)
+3. Aligned with current macro regime and sector rotation
+4. Within wallet budget ($${walletState.cashBalance.toFixed(2)} available cash)
+
+For EACH candidate, use the Finviz screener data, World Monitor intelligence, and computed TA indicators.
+Cross-reference: a stock appearing in multiple screener categories is a stronger signal.
+
+Respond with JSON (no markdown):
+{
+  "regime": {
+    "name": "current regime",
+    "headline": "one-line regime summary",
+    "discoveryBias": "what type of stocks the current regime favors"
+  },
+  "discoveries": [
+    {
+      "ticker": "XXXX",
+      "score": number_0_to_100,
+      "verdict": "STRONG BUY|BUY|WATCHLIST",
+      "headline": "one catchy line — why this is underrated",
+      "reasoning": "3-4 sentences: what screeners flagged it, TA confirmation, macro alignment, catalyst",
+      "strategy": "Mean Reversion|Breakout Momentum|Earnings Catalyst|Value Play|Sector Rotation",
+      "screenersHit": ["oversoldValue", "unusualVolume", etc.],
+      "entryPrice": number,
+      "stop": number,
+      "tp1": number, "tp2": number,
+      "positionDollars": number,
+      "shares": number,
+      "riskReward": "X:1",
+      "timeHorizon": "1-3 days|1-2 weeks|2-4 weeks",
+      "signalAttribution": [{"source":"...","weight":number,"signal":"...","verdict":"BULLISH|BEARISH|NEUTRAL"}]
+    }
+  ],
+  "sectorRotation": "which sectors are seeing the most accumulation right now",
+  "avoidSectors": "sectors to avoid and why"
+}
+
+CRITICAL:
+- Only include stocks with score >= 50. Quality over quantity.
+- Each discovery MUST cite specific TA values from computed data if available.
+- Position sizing must respect wallet limits.
+- If a stock appears in 3+ Finviz screeners, give it extra weight.
+${attributionRulesText}` : null;
+
+  const context = isDiscoverMode ? discoverContext : (isAssessMode ? assessContext : (isQuick ? quickContext : fullContext));
 
 
   // System prompts — quick mode is lightweight, full mode has scoring framework
@@ -778,11 +881,17 @@ Scoring dimensions:
 
 Be brutally honest. A score below 40 = AVOID. Above 75 = strong conviction. Challenge weak theses.`;
 
-  // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments
+  const discoverSystemPrompt = `You are Daniel's investment discovery agent. Your job is to find underrated, overlooked, or early-stage momentum stocks using real screener data, technical indicators, and macro intelligence. Return only valid JSON, no markdown.
+
+Be selective — only recommend stocks where multiple signals converge. A stock appearing in Finviz unusual volume AND showing RSI oversold bounce AND aligned with macro regime is far stronger than one signal alone.
+
+You have COMPUTED technical indicators and LIVE World Monitor data. Reference specific values.`;
+
+  // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments + discovery
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
-  const modelId = (isQuick && !isAssessMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
+  const modelId = (isQuick && !isAssessMode && !isDiscoverMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
   const maxTokens = isQuick ? 2048 : 8192;
-  const systemPrompt = isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt);
+  const systemPrompt = isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt));
 
   let analysisText;
   try {
@@ -827,7 +936,7 @@ Be brutally honest. A score below 40 = AVOID. Above 75 = strong conviction. Chal
     }
   }
   analysis._attributionSync = attributionUpdates;
-  analysis._mode = isAssessMode ? 'assess' : mode;
+  analysis._mode = isDiscoverMode ? 'discover' : (isAssessMode ? 'assess' : mode);
   analysis._assessTicker = assessTicker || null;
   analysis._model = modelId;
   analysis._worldMonitor = {
