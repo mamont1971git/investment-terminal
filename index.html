@@ -327,6 +327,10 @@ function OrderDrafts(){
         alert('IBKR not yet connected.\n\n'+d.message+'\n\nSwitching to Dry Run.');
         save('tradingMode','dry-run');
       }
+      if(d.action==='wallet-blocked'){
+        alert('💰 INSUFFICIENT FUNDS\n\n'+d.message);
+        return;
+      }
       await fetchDrafts();
       // Refresh positions so newly confirmed trades appear in holdings
       window.dispatchEvent(new Event('refreshDrafts'));
@@ -1033,6 +1037,7 @@ function DailyBrief(){
   const [positions,setPositions]=useState([]);
   const [closedTrades,setClosedTrades]=useState([]);
   const [stats,setStats]=useState(null);
+  const [wallet,setWallet]=useState(null);
   const [posStatus,setPosStatus]=useState('idle'); // idle | loading | done | failed
 
   const fetchPositions=useCallback(async()=>{
@@ -1044,6 +1049,7 @@ function DailyBrief(){
       if(d.positions)setPositions(d.positions);
       if(d.closedTrades)setClosedTrades(d.closedTrades);
       if(d.stats)setStats(d.stats);
+      if(d.wallet)setWallet(d.wallet);
       setPosStatus('done');
     }catch(e){
       logError('FETCH_POSITIONS',e.message,{});
@@ -1293,6 +1299,37 @@ function DailyBrief(){
           <Card className="p-4 text-center">
             <div className="text-gray-500 text-sm mb-1">No open paper trades</div>
             <div className="text-xs text-gray-600">Run an analysis to find BUY opportunities, or create a draft manually.</div>
+          </Card>
+        )}
+
+        {/* ── wallet ── */}
+        {wallet&&(
+          <Card className="p-4">
+            <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">
+              <span style={{marginRight:'6px'}}>💰</span> Virtual Wallet
+            </div>
+            <div className="grid grid-cols-4 gap-3 text-center">
+              {[
+                {l:'Cash',v:`$${fmt(wallet.cashBalance,0)}`,c:'#22c55e'},
+                {l:'Invested',v:`$${fmt(wallet.totalInvested,0)}`,c:'#60a5fa'},
+                {l:'Portfolio',v:`$${fmt(wallet.totalLiveValue||wallet.totalValue,0)}`,c:'#a78bfa'},
+                {l:'Unrealized',v:`${(wallet.unrealizedPnl||0)>=0?'+':''}$${fmt(wallet.unrealizedPnl||0,0)}`,
+                  c:(wallet.unrealizedPnl||0)>=0?'#22c55e':'#ef4444'},
+              ].map((s,i)=>(
+                <div key={i}>
+                  <div className="text-xs text-gray-600 mb-1">{s.l}</div>
+                  <div className="font-black text-base"style={{color:s.c}}>{s.v}</div>
+                </div>
+              ))}
+            </div>
+            {wallet.unrealizedPnlPct!=null&&(
+              <div className="text-center mt-2 text-xs text-gray-500">
+                Unrealized P&L: <span style={{color:(wallet.unrealizedPnlPct||0)>=0?'#22c55e':'#ef4444',fontWeight:700}}>
+                  {(wallet.unrealizedPnlPct||0)>=0?'+':''}{fmt(wallet.unrealizedPnlPct,1)}%
+                </span>
+                <span className="ml-3">Txns: {wallet.transactionCount||0}</span>
+              </div>
+            )}
           </Card>
         )}
 

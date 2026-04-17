@@ -11,6 +11,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { computeAll } = require('./_lib/indicators');
 
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
+const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
 
 // ── helpers ──────────────────────────────────────────────────────────────
 function httpsGet(url, headers={}) {
@@ -180,6 +181,63 @@ async function fetchRecentClosed(token) {
       try{resolve(JSON.parse(d).results||[]);}catch{resolve([]);}
     });});
     req.on('error',()=>resolve([])); req.write(data); req.end();
+  });
+}
+
+async function fetchWalletState(token) {
+  return new Promise((resolve) => {
+    const data = JSON.stringify({
+      sorts: [{ property: 'Date', direction: 'ascending' }],
+      page_size: 200,
+    });
+    const req = https.request({
+      hostname: 'api.notion.com', path: `/v1/databases/${WALLET_DB}/query`, method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(data) },
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const txs = JSON.parse(d).results || [];
+          let cash = 0;
+          const holdings = {};
+          for (const page of txs) {
+            const p = page.properties;
+            const type = p['Type']?.select?.name || '';
+            const amount = p['Amount']?.number || 0;
+            const ticker = p['Ticker']?.rich_text?.[0]?.plain_text || '';
+            const shares = p['Shares']?.number || 0;
+            if (type === 'DEPOSIT' || type === 'DIVIDEND') cash += amount;
+            else if (type === 'BUY') {
+              cash += amount; // negative
+              if (ticker) {
+                if (!holdings[ticker]) holdings[ticker] = { shares: 0, totalCost: 0 };
+                holdings[ticker].shares += shares;
+                holdings[ticker].totalCost += Math.abs(amount);
+              }
+            } else if (type === 'SELL') {
+              cash += amount; // positive
+              if (ticker && holdings[ticker]) {
+                const ratio = Math.max(0, (holdings[ticker].shares - shares)) / holdings[ticker].shares;
+                holdings[ticker].shares -= shares;
+                holdings[ticker].totalCost *= ratio;
+                if (holdings[ticker].shares <= 0) delete holdings[ticker];
+              }
+            } else if (type === 'WITHDRAWAL') cash += amount;
+          }
+          const totalInvested = Object.values(holdings).reduce((s, h) => s + h.totalCost, 0);
+          resolve({
+            cashBalance: +cash.toFixed(2),
+            totalInvested: +totalInvested.toFixed(2),
+            totalValue: +(cash + totalInvested).toFixed(2),
+            holdings,
+            txCount: txs.length,
+          });
+        } catch { resolve({ cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 }); }
+      });
+    });
+    req.on('error', () => resolve({ cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 }));
+    req.write(data); req.end();
   });
 }
 
@@ -355,11 +413,12 @@ module.exports = async (req, res) => {
 
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick';
-  const [market, openTrades, closedTrades, worldMonitor] = await Promise.all([
+  const [market, openTrades, closedTrades, worldMonitor, walletState] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
     (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
     fetchWorldMonitor(),
+    NOTION_TOKEN ? fetchWalletState(NOTION_TOKEN) : Promise.resolve({ cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 }),
   ]);
 
   const openFormatted = openTrades.map(formatTrade);
@@ -467,6 +526,13 @@ LIVE MARKET DATA:
 - SPY: ${market.spyPrice ? '$'+market.spyPrice.toFixed(2) : 'unavailable'} | Above 50 EMA: ${taData.SPY?.emaAlignment ? (taData.SPY.emaAlignment.above50?'YES':'NO') + ' (computed: price $'+taData.SPY.price+' vs EMA50 $'+taData.SPY.emaAlignment.ema50+')' : market.spyAbove===null?'approx from VIX':market.spyAbove?'YES':'NO'}
 ${taContext}${wmContext}
 
+💰 VIRTUAL WALLET:
+- Cash Available: $${walletState.cashBalance.toFixed(2)}
+- Total Invested: $${walletState.totalInvested.toFixed(2)}
+- Portfolio Value (at cost): $${walletState.totalValue.toFixed(2)}
+- Holdings: ${Object.entries(walletState.holdings).map(([t,h])=>`${t}(${h.shares.toFixed(4)}sh@$${(h.totalCost/h.shares).toFixed(2)})`).join(', ') || 'None'}
+⚠️ WALLET CONSTRAINT: You may ONLY recommend BUY if the cost fits within available cash ($${walletState.cashBalance.toFixed(2)}). Position sizing must be in DOLLARS and SHARES based on this wallet, not percentages of a hypothetical portfolio. If cash is insufficient, recommend WATCHLIST instead of BUY.
+
 OPEN PAPER TRADES (${openFormatted.length}):
 ${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}`;
 
@@ -551,6 +617,8 @@ Respond with a JSON object (no markdown, pure JSON):
       "entryPrice": number,
       "stop": number, "tp1": number, "tp2": number,
       "positionPct": number,
+      "positionDollars": number_dollar_amount_from_wallet,
+      "shares": number_of_shares_to_buy,
       "waitingFor": "only for WATCHLIST — what needs to improve",
       "signalAttribution": [
         {
@@ -573,11 +641,12 @@ CRITICAL RULES:
 - For "full analysis" or "run investment analysis": ONLY return BUY (score≥65) and WATCHLIST (score 50-64) in opportunities. Do NOT include SKIP entries — they waste space. Focus on actionable items only.
 - For "score" commands on a specific ticker: include the full verdict even if SKIP.
 - For "portfolio review": focus entirely on positions array with detailed actions. Opportunities array can be empty.
-- Every BUY must have stop, tp1, tp2, positionPct. Do NOT include entryPrice — the system will fetch the live price automatically. If you don't know the current price, still recommend the trade; the system handles pricing.
+- Every BUY must have stop, tp1, tp2, positionPct, positionDollars, shares. Calculate positionDollars from the wallet cash available ($${walletState.cashBalance.toFixed(2)}), then shares = positionDollars / estimated_price. Do NOT include entryPrice — the system will fetch the live price automatically. If you don't know the current price, still recommend the trade; the system handles pricing.
+- WALLET ENFORCEMENT: Total cost of ALL BUY recommendations in this response must NOT exceed available cash ($${walletState.cashBalance.toFixed(2)}). If insufficient cash, use WATCHLIST instead of BUY.
 - Every position must have a specific recommendation and reasoning. Never say "monitor" — say exactly what to do.
 - Be specific with price levels and percentages. The user needs exact numbers to act on.
 - USE THE COMPUTED TECHNICAL INDICATORS above — they are calculated from real OHLCV data. Refer to specific RSI, MACD, Bollinger, Z-Score, Fibonacci, OBV, volume ratio values in your reasoning.
-- Apply the 1% Rule: never risk more than 1% of portfolio ($1,000 on $100k) on any single trade. Use the computed 1% rule max shares as a guide.
+- Apply the 1% Rule: never risk more than 1% of total portfolio value ($${(walletState.totalValue * 0.01).toFixed(2)}) on any single trade. Use the computed 1% rule max shares as a guide.
 - Reference Fibonacci support/resistance levels for entry/exit targets when available.
 - If OBV shows bearish divergence (price up but volume not confirming), flag it as a warning.
 - Z-Score below -2 is a strong mean reversion signal; above +2 is overbought warning.
@@ -712,6 +781,18 @@ Scoring framework additions:
           continue;
         }
 
+        // 💰 WALLET ENFORCEMENT — hard limit, server-side
+        const positionCost = opp.positionDollars || (opp.positionPct ? walletState.totalValue * opp.positionPct / 100 : price);
+        if (positionCost > walletState.cashBalance) {
+          draftsSkipped.push({
+            ticker: opp.ticker,
+            reason: `INSUFFICIENT_FUNDS: need $${positionCost.toFixed(2)} but only $${walletState.cashBalance.toFixed(2)} cash available`,
+          });
+          opp._walletBlocked = true;
+          opp._walletAlert = `💰 BLOCKED: $${positionCost.toFixed(2)} exceeds available cash $${walletState.cashBalance.toFixed(2)}`;
+          continue;
+        }
+
         {
           const draft = await createDraft(
             opp.ticker, opp.strategy, opp.score,
@@ -727,9 +808,14 @@ Scoring framework additions:
 
   analysis.draftsCreated = draftsCreated;
   analysis.draftsSkipped = draftsSkipped;
+  analysis.wallet = walletState;
   // Collect price alerts for opportunities that couldn't get live prices
   analysis.priceAlerts = (analysis.opportunities || [])
     .filter(o => o._priceAlert)
     .map(o => ({ ticker: o.ticker, alert: o._priceAlert }));
+  // Collect wallet-blocked alerts
+  analysis.walletAlerts = (analysis.opportunities || [])
+    .filter(o => o._walletBlocked)
+    .map(o => ({ ticker: o.ticker, alert: o._walletAlert }));
   res.json(analysis);
 };
