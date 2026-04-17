@@ -406,7 +406,7 @@ Scoring framework additions:
   try {
     const message = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: systemPrompt,
       messages: [{ role: 'user', content: context }],
     });
@@ -428,14 +428,24 @@ Scoring framework additions:
 
   // Persist attribution + reasoning back to Notion for open positions
   // This ensures position cards show attribution on next dashboard load (without re-running analysis)
+  const attributionUpdates = { attempted: 0, saved: 0, missing: [] };
   if (NOTION_TOKEN && analysis.positions) {
     const tickerToNotionId = {};
     for (const t of openFormatted) { if (t.ticker && t.notionId) tickerToNotionId[t.ticker] = t.notionId; }
-    const updatePromises = analysis.positions
-      .filter(p => p.ticker && tickerToNotionId[p.ticker] && p.signalAttribution)
-      .map(p => updatePositionInNotion(tickerToNotionId[p.ticker], p.signalAttribution, p.reasoning, NOTION_TOKEN));
-    if (updatePromises.length) await Promise.all(updatePromises).catch(() => {});
+    for (const p of analysis.positions) {
+      attributionUpdates.attempted++;
+      if (!p.signalAttribution || !p.signalAttribution.length) {
+        attributionUpdates.missing.push(p.ticker || 'unknown');
+        continue;
+      }
+      if (!tickerToNotionId[p.ticker]) continue;
+      try {
+        await updatePositionInNotion(tickerToNotionId[p.ticker], p.signalAttribution, p.reasoning, NOTION_TOKEN);
+        attributionUpdates.saved++;
+      } catch {}
+    }
   }
+  analysis._attributionSync = attributionUpdates;
 
   // Auto-create Order Drafts for BUY opportunities with score ≥ 65
   const draftsCreated = [];
