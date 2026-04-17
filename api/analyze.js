@@ -11,9 +11,12 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { computeAll } = require('./_lib/indicators');
 let computeSourceWeights;
 try { computeSourceWeights = require('./_lib/signal-weights').computeSourceWeights; } catch { computeSourceWeights = null; }
+let runDiagnostics;
+try { runDiagnostics = require('./_lib/diagnostics').runDiagnostics; } catch { runDiagnostics = null; }
 
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
+const TUNING_DB = 'c326714ad2b748878e94c473760c97e3';
 
 // ── helpers ──────────────────────────────────────────────────────────────
 function httpsGet(url, headers={}) {
@@ -209,6 +212,42 @@ async function fetchRecentClosed(token) {
       try{resolve(JSON.parse(d).results||[]);}catch{resolve([]);}
     });});
     req.on('error',()=>resolve([])); req.write(data); req.end();
+  });
+}
+
+async function fetchApprovedTunings(token) {
+  return new Promise((resolve) => {
+    const data = JSON.stringify({
+      filter: { property: 'Status', select: { equals: 'Approved' } },
+      sorts: [{ property: 'Date Proposed', direction: 'descending' }],
+      page_size: 20,
+    });
+    const req = https.request({
+      hostname: 'api.notion.com', path: `/v1/databases/${TUNING_DB}/query`, method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(data) },
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const pages = JSON.parse(d).results || [];
+          const tunings = pages.map(p => {
+            const props = p.properties;
+            return {
+              category: props['Category']?.select?.name || '',
+              recommendation: props['Recommendation']?.title?.[0]?.plain_text || '',
+              paramBefore: props['Parameter Before']?.rich_text?.[0]?.plain_text || '',
+              paramAfter: props['Parameter After']?.rich_text?.[0]?.plain_text || '',
+              priority: props['Priority']?.select?.name || '',
+              dateApplied: props['Date Applied']?.date?.start || '',
+            };
+          });
+          resolve(tunings);
+        } catch { resolve([]); }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.write(data); req.end();
   });
 }
 
@@ -449,16 +488,48 @@ module.exports = async (req, res) => {
   const isDiscoverMode = mode === 'discover' || /discover|find.*underrated|hidden.*gems/i.test(command);
   const discoverFocus = parsed.focus || ''; // e.g. "tech", "energy", "value", "momentum"
 
+  // Detect diagnose mode (performance evaluation + prescription)
+  const isDiagnoseMode = mode === 'diagnose' || /evaluate.*performance|diagnose|run.*diagnostics/i.test(command);
+
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick' && !isAssessMode;
-  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals] = await Promise.all([
+  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals, approvedTunings] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
     (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
     fetchWorldMonitor(),
     NOTION_TOKEN ? fetchWalletState(NOTION_TOKEN) : Promise.resolve({ cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 }),
     (isDiscoverMode || mode === 'full') ? fetchFinvizSignals() : Promise.resolve(null),
+    (!isQuick && !isDiagnoseMode && NOTION_TOKEN) ? fetchApprovedTunings(NOTION_TOKEN) : Promise.resolve([]),
   ]);
+
+  // For diagnose mode, also fetch ALL closed trades (not just recent 8)
+  let allClosedTrades = closedTrades;
+  if (isDiagnoseMode && NOTION_TOKEN) {
+    try {
+      const allClosed = await new Promise((resolve) => {
+        const data = JSON.stringify({
+          filter: { or: [
+            { property: 'Status', select: { equals: 'Closed' } },
+            { property: 'Status', select: { equals: 'Stopped Out' } },
+          ]},
+          sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+          page_size: 100
+        });
+        const req = https.request({
+          hostname: 'api.notion.com', path: `/v1/databases/${TRADE_DB}/query`, method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + NOTION_TOKEN, 'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(data) }
+        }, res => {
+          let d = ''; res.on('data', c => d += c);
+          res.on('end', () => { try { resolve(JSON.parse(d).results || []); } catch { resolve([]); } });
+        });
+        req.on('error', () => resolve([]));
+        req.write(data); req.end();
+      });
+      allClosedTrades = allClosed;
+    } catch {}
+  }
 
   const openFormatted = openTrades.map(formatTrade);
   const closedFormatted = closedTrades.map(formatTrade);
@@ -593,7 +664,15 @@ ${sw.ranked.filter(s=>s.totalTrades>0).map(s=>`  ${s.rank}. ${s.source}: ${s.wei
     } catch { return ''; }
   })()}
 OPEN PAPER TRADES (${openFormatted.length}):
-${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}`;
+${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}
+${approvedTunings && approvedTunings.length > 0 ? `
+🔧 ACTIVE TUNING OVERRIDES (approved parameter changes — YOU MUST FOLLOW THESE):
+${approvedTunings.map((t, i) => `  ${i+1}. [${t.category.toUpperCase()}] ${t.recommendation}
+     Before: ${t.paramBefore}
+     After: ${t.paramAfter}
+     Priority: ${t.priority}`).join('\n')}
+⚠️ These tunings override default parameters. Apply them to all relevant analyses.
+` : ''}`;
 
   // ── QUICK MODE: Haiku — regime + position status only ──────────────────
   const quickContext = `${marketHeader}
@@ -862,7 +941,92 @@ CRITICAL:
 - If a stock appears in 3+ Finviz screeners, give it extra weight.
 ${attributionRulesText}` : null;
 
-  const context = isDiscoverMode ? discoverContext : (isAssessMode ? assessContext : (isQuick ? quickContext : fullContext));
+  // ── DIAGNOSE MODE: adversarial performance review ─────────────────────
+  let diagnoseContext = null;
+  let diagnosticData = null;
+  if (isDiagnoseMode) {
+    // Run diagnostics engine on all closed trades
+    const allClosedFormatted = allClosedTrades.map(formatTrade);
+    if (runDiagnostics) {
+      diagnosticData = runDiagnostics(allClosedFormatted, openFormatted);
+    }
+    // Compute source weights for context
+    let swData = null;
+    if (computeSourceWeights && allClosedFormatted.length > 0) {
+      try { swData = computeSourceWeights(allClosedFormatted); } catch {}
+    }
+
+    diagnoseContext = `PERFORMANCE EVALUATION MODE — ADVERSARIAL REVIEW
+You are now acting as an INDEPENDENT REVIEWER, not the stock-picking analyst. Your job is to find weaknesses, miscalibrations, and improvement opportunities in this trading system's historical performance.
+
+TRADE HISTORY (${allClosedFormatted.length} closed trades):
+${allClosedFormatted.map(t => {
+  let line = `${t.ticker} | ${t.strategy} | Score: ${t.score || '?'} | P&L: ${t.pnl != null ? (t.pnl > 0 ? '+' : '') + t.pnl.toFixed(1) + '%' : '?'} | Regime: ${t.regime || '?'} | Days: ${t.daysHeld || '?'}`;
+  if (t.closeReason) line += ` | Close: ${t.closeReason}`;
+  if (t.lesson) line += ` | Lesson: ${t.lesson}`;
+  if (t.signalAttribution) {
+    const attr = typeof t.signalAttribution === 'string' ? JSON.parse(t.signalAttribution) : t.signalAttribution;
+    if (Array.isArray(attr)) {
+      const topSources = attr.filter(a => a.weight > 15).map(a => `${a.source}(${a.verdict}:${a.weight}%)`).join(', ');
+      if (topSources) line += ` | Signals: ${topSources}`;
+    }
+  }
+  return `- ${line}`;
+}).join('\n')}
+
+OPEN POSITIONS (${openFormatted.length}):
+${openFormatted.length ? openFormatted.map(t => `- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Score: ${t.score}`).join('\n') : 'None'}
+
+${diagnosticData ? `AUTOMATED DIAGNOSTIC FINDINGS (from our statistical engine):
+${JSON.stringify(diagnosticData, null, 2)}` : 'Diagnostic engine unavailable — perform your own analysis.'}
+
+${swData ? `SIGNAL SOURCE RELIABILITY (MWU Algorithm):
+${swData.ranked.map(s => `  ${s.rank}. ${s.source}: ${s.weight}% weight | ${s.winRate != null ? s.winRate + '% WR' : 'no data'} (${s.wins}W/${s.losses}L) | conf: ${s.confidence}`).join('\n')}` : ''}
+
+YOUR TASK: Produce specific, actionable tuning recommendations. For each finding, propose a concrete parameter change that could improve performance.
+
+Respond with JSON (no markdown):
+{
+  "overallGrade": "A|B|C|D|F",
+  "headline": "one-line summary of system health",
+  "summary": "2-3 sentences on overall performance strengths and weaknesses",
+  "recommendations": [
+    {
+      "id": "rec_1",
+      "category": "regime|strategy|stop-loss|signal-weights|position-sizing|scoring|diversification|timing",
+      "title": "Short descriptive title",
+      "severity": "critical|high|medium|low",
+      "finding": "What the data shows (specific numbers)",
+      "diagnosis": "Why this is happening (root cause analysis)",
+      "recommendation": "What to change (specific parameter adjustment)",
+      "paramBefore": "Current setting/behavior",
+      "paramAfter": "Proposed new setting/behavior",
+      "expectedImpact": "Expected improvement if applied",
+      "confidence": "high|medium|low",
+      "evidence": "Supporting data points"
+    }
+  ],
+  "positives": [
+    {
+      "title": "What's working well",
+      "detail": "Supporting evidence"
+    }
+  ],
+  "tradesAnalyzed": number,
+  "riskScore": number_1_to_10
+}
+
+CRITICAL RULES:
+- Be specific. "Adjust scoring" is useless. "Raise draft threshold from 65 to 75 in Caution Zone regimes" is actionable.
+- Every recommendation MUST have paramBefore and paramAfter — these will be used to apply fixes.
+- Challenge the scoring model, the signal source weights, the stop-loss methodology, the position sizing — everything.
+- If the system is doing well, say so — but still find 2-3 things to improve.
+- Do NOT recommend things outside the system's control (e.g., "get better data"). Focus on tunable parameters.
+- Categories must be one of: regime, strategy, stop-loss, signal-weights, position-sizing, scoring, diversification, timing
+- Each recommendation needs a unique id starting with "rec_"`;
+  }
+
+  const context = isDiagnoseMode ? diagnoseContext : (isDiscoverMode ? discoverContext : (isAssessMode ? assessContext : (isQuick ? quickContext : fullContext)));
 
 
   // System prompts — quick mode is lightweight, full mode has scoring framework
@@ -906,11 +1070,26 @@ Be selective — only recommend stocks where multiple signals converge. A stock 
 
 You have COMPUTED technical indicators and LIVE World Monitor data. Reference specific values.`;
 
-  // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments + discovery
+  const diagnoseSystemPrompt = `You are an ADVERSARIAL performance reviewer for an algorithmic trading system. You are NOT the stock-picking analyst — you are the quality control engineer who audits the analyst's work. Return only valid JSON, no markdown.
+
+Your goal: find every weakness, miscalibration, and missed opportunity in this system's historical performance. Be brutally honest. The analyst will naturally resist your findings — that's expected. Your job is to find the truth in the data.
+
+Approach:
+1. Look at win rates by regime, strategy, and score bands — are scores actually predictive?
+2. Check if stop-losses are too tight (many stopped-out trades that would have recovered) or too loose (large losses)
+3. Examine signal source reliability — which sources actually correlate with winners?
+4. Check position sizing — are large positions outperforming or underperforming?
+5. Look for sector concentration risk in open positions
+6. Check if the system has blind spots — types of trades it consistently loses on
+7. Verify score calibration — does a score of 80 actually perform better than 70?
+
+Be constructive but unflinching. Every recommendation must be specific and implementable.`;
+
+  // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments + discovery + diagnose
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
-  const modelId = (isQuick && !isAssessMode && !isDiscoverMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
+  const modelId = (isQuick && !isAssessMode && !isDiscoverMode && !isDiagnoseMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
   const maxTokens = isQuick ? 2048 : 8192;
-  const systemPrompt = isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt));
+  const systemPrompt = isDiagnoseMode ? diagnoseSystemPrompt : (isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt)));
 
   let analysisText;
   try {
@@ -955,7 +1134,7 @@ You have COMPUTED technical indicators and LIVE World Monitor data. Reference sp
     }
   }
   analysis._attributionSync = attributionUpdates;
-  analysis._mode = isDiscoverMode ? 'discover' : (isAssessMode ? 'assess' : mode);
+  analysis._mode = isDiagnoseMode ? 'diagnose' : (isDiscoverMode ? 'discover' : (isAssessMode ? 'assess' : mode));
   analysis._assessTicker = assessTicker || null;
   analysis._model = modelId;
   analysis._worldMonitor = {
@@ -1024,6 +1203,8 @@ You have COMPUTED technical indicators and LIVE World Monitor data. Reference sp
   analysis.draftsCreated = draftsCreated;
   analysis.draftsSkipped = draftsSkipped;
   analysis.wallet = walletState;
+  if (isDiagnoseMode && diagnosticData) analysis._diagnostics = diagnosticData;
+  analysis._activeTunings = approvedTunings ? approvedTunings.length : 0;
   // Collect price alerts for opportunities that couldn't get live prices
   analysis.priceAlerts = (analysis.opportunities || [])
     .filter(o => o._priceAlert)

@@ -11,9 +11,12 @@ try {
   computeSourceWeights = sw.computeSourceWeights;
   computePortfolioMetrics = sw.computePortfolioMetrics;
 } catch { computeSourceWeights = null; computePortfolioMetrics = null; }
+let runDiagnostics;
+try { runDiagnostics = require('./_lib/diagnostics').runDiagnostics; } catch { runDiagnostics = null; }
 
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
+const TUNING_DB = 'c326714ad2b748878e94c473760c97e3';
 
 function notionQuery(filter, sorts, token, pageSize=50) {
   return new Promise((resolve, reject) => {
@@ -358,6 +361,50 @@ module.exports = async (req, res) => {
       return res.json({ ok: true, walletTx: result.id, newBalance, walletState: { ...walletState, cashBalance: newBalance } });
     }
 
+    // Route: write tuning recommendation to Notion Tuning Log
+    if (parsed.action === 'tuning_log') {
+      const rec = parsed.rec;
+      if (!rec || !rec.title) return res.status(400).json({ error: 'rec.title required' });
+      const today = new Date().toISOString().split('T')[0];
+      const props = {
+        'Recommendation': { title: [{ text: { content: rec.title } }] },
+        'Category': { select: { name: rec.category || 'scoring' } },
+        'Status': { select: { name: 'Approved' } },
+        'Priority': { select: { name: rec.severity === 'critical' ? 'Critical' : rec.severity === 'high' ? 'High' : rec.severity === 'medium' ? 'Medium' : 'Low' } },
+        'Evidence': { rich_text: [{ text: { content: (rec.evidence || '').slice(0, 2000) } }] },
+        'Expected Impact': { rich_text: [{ text: { content: (rec.expectedImpact || '').slice(0, 2000) } }] },
+        'Parameter Before': { rich_text: [{ text: { content: (rec.paramBefore || '').slice(0, 2000) } }] },
+        'Parameter After': { rich_text: [{ text: { content: (rec.paramAfter || '').slice(0, 2000) } }] },
+        'Date Proposed': { date: { start: today } },
+        'Trades Analyzed': { number: rec.tradesAnalyzed || 0 },
+        'Confidence': { select: { name: rec.confidence === 'high' ? 'High' : rec.confidence === 'medium' ? 'Medium' : 'Low' } },
+      };
+      const body = JSON.stringify({ parent: { database_id: TUNING_DB }, properties: props });
+      return new Promise(resolve => {
+        const req = https.request({
+          hostname: 'api.notion.com', path: '/v1/pages', method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body),
+          },
+        }, response => {
+          let d = ''; response.on('data', c => d += c);
+          response.on('end', () => {
+            try {
+              const r = JSON.parse(d);
+              if (response.statusCode < 300) {
+                resolve(res.json({ ok: true, tuningId: r.id }));
+              } else {
+                resolve(res.status(400).json({ error: r.message || 'Failed to create tuning entry', detail: r }));
+              }
+            } catch { resolve(res.status(500).json({ error: 'Parse error' })); }
+          });
+        });
+        req.on('error', () => resolve(res.status(500).json({ error: 'Network error' })));
+        req.write(body); req.end();
+      });
+    }
+
     // Route: sync positions (existing)
     return handleSync(TOKEN, res);
   }
@@ -530,6 +577,12 @@ module.exports = async (req, res) => {
     try { portfolioMetrics = computePortfolioMetrics(closedTrades); } catch {}
   }
 
+  // Run diagnostics on closed + open trades
+  let diagnostics = null;
+  if (runDiagnostics && closedTrades.length > 0) {
+    try { diagnostics = runDiagnostics(closedTrades, openTrades.map(formatTrade)); } catch {}
+  }
+
   res.json({
     positions,
     closedTrades,
@@ -537,6 +590,7 @@ module.exports = async (req, res) => {
     wallet: walletSummary,
     sourceWeights,
     portfolioMetrics,
+    diagnostics,
     pricesAvailable: Object.keys(prices).length > 0,
     ts: new Date().toISOString(),
   });
