@@ -462,6 +462,17 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
 
   return(
     <div style={{borderTop:'1px solid #1e2d4a',background:'#0a0e1a'}}>
+      {/* ═══════════ PRICE ALERT — critical warning ═══════════ */}
+      {t.priceAlert&&(
+        <div className="px-4 py-2 flex items-start gap-2"
+          style={{background:'#7f1d1d',borderBottom:'2px solid #ef4444'}}>
+          <span className="text-red-300 animate-pulse flex-shrink-0">🚨</span>
+          <div>
+            <div className="text-xs font-bold text-red-200">{t.priceAlert.message}</div>
+            <div className="text-xs text-red-400 mt-0.5">P&L, stop-loss checks, and take-profit targets are inactive until price data is restored.</div>
+          </div>
+        </div>
+      )}
       {/* ═══════════ HEADER — ticker + P&L ═══════════ */}
       <div className="px-4 pt-3 pb-2">
         <div className="flex items-center justify-between">
@@ -881,6 +892,18 @@ function AnalysisPanel(){
               </div>
             );
           })()}
+
+          {/* price alerts */}
+          {result.priceAlerts?.length>0&&(
+            <div style={{background:'#7f1d1d',borderBottom:'2px solid #ef4444'}}>
+              {result.priceAlerts.map((a,i)=>(
+                <div key={i} className="px-4 py-2 flex items-start gap-2">
+                  <span className="text-red-300 animate-pulse flex-shrink-0">🚨</span>
+                  <div className="text-xs text-red-200"><span className="font-bold">{a.ticker}:</span> {a.alert}</div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* drafts created (by API auto-create) */}
           {result.draftsCreated?.length>0&&(

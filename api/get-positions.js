@@ -201,14 +201,21 @@ module.exports = async (req, res) => {
       signals: ta._summary || [],
     } : null;
 
+    // ALERT if we can't get a price for an active holding
+    const priceAlert = !currentPrice ? {
+      level: 'critical',
+      message: `⚠️ PRICE UNAVAILABLE for ${t.ticker} — cannot calculate P&L, stop-loss, or take-profit. Check Alpha Vantage API or ticker symbol.`,
+    } : null;
+
     return {
       ...t,
       currentPrice,
       livePnlPct,
       daysHeld,
-      recommendation,
-      urgency,
+      recommendation: !currentPrice ? 'CHECK_PRICE' : recommendation,
+      urgency: !currentPrice ? 'urgent' : urgency,
       indicators,
+      priceAlert,
     };
   });
 

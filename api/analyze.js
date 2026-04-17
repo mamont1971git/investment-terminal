@@ -416,9 +416,10 @@ Scoring framework additions:
           price = q?.['05. price'] ? parseFloat(q['05. price']) : null;
         } catch{}
 
-        // No live price = skip this ticker entirely
+        // No live price = skip draft but alert
         if (!price) {
-          opp.reasoning = `⚠️ SKIPPED DRAFT: Could not fetch live price for ${opp.ticker}. Draft not created. | ${opp.reasoning}`;
+          opp._priceAlert = `PRICE UNAVAILABLE for ${opp.ticker} — draft not created. Check Alpha Vantage API limit (25/day) or verify ticker symbol.`;
+          opp.reasoning = `🚨 ALERT: ${opp._priceAlert} | ${opp.reasoning}`;
           continue;
         }
 
@@ -436,5 +437,9 @@ Scoring framework additions:
   }
 
   analysis.draftsCreated = draftsCreated;
+  // Collect price alerts for opportunities that couldn't get live prices
+  analysis.priceAlerts = (analysis.opportunities || [])
+    .filter(o => o._priceAlert)
+    .map(o => ({ ticker: o.ticker, alert: o._priceAlert }));
   res.json(analysis);
 };
