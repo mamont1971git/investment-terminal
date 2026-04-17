@@ -328,6 +328,8 @@ function OrderDrafts(){
         save('tradingMode','dry-run');
       }
       await fetchDrafts();
+      // Refresh positions so newly confirmed trades appear in holdings
+      window.dispatchEvent(new Event('refreshDrafts'));
     }catch(e){alert('Error: '+e.message);}
     finally{setActing(null);}
   };
