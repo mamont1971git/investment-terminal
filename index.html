@@ -617,27 +617,41 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
                     {t.indicators.signals.slice(0,3).map((s,i)=><div key={i}>• {s}</div>)}
                   </div>
                 )}
-                {/* source signals — embedded in TA section */}
-                {t.signalAttribution&&t.signalAttribution.length>0&&(
-                  <div className="mt-2 pt-2"style={{borderTop:'1px solid #1e2d4a'}}>
-                    <div className="text-xs font-bold text-gray-600 mb-1">🎯 Source Signals</div>
-                    {[...t.signalAttribution].sort((a,b)=>b.weight-a.weight).map((s,i)=>{
-                      const meta=SOURCE_META[s.source]||{icon:'❓',color:'#94a3b8'};
-                      const vc=VERDICT_COLOR[s.verdict]||'#94a3b8';
-                      return s.verdict==='NO_DATA'?null:(
-                        <div key={i} className="flex items-start gap-1.5 mt-1">
-                          <span style={{fontSize:'11px'}}>{meta.icon}</span>
-                          <div className="flex-1 min-w-0">
-                            <span className="text-xs font-bold"style={{color:meta.color}}>{s.source}</span>
-                            <span className="text-xs ml-1"style={{color:meta.color}}>{s.weight}%</span>
-                            <span className="text-xs ml-1 px-1 rounded-full"style={{background:vc+'20',color:vc,fontSize:'9px'}}>{s.verdict}</span>
-                            <div className="text-xs text-gray-600 leading-snug">{s.signal}</div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+              </div>
+            )}
+            {/* source signals — OUTSIDE indicators block so it shows even without TA data */}
+            {t.signalAttribution&&t.signalAttribution.length>0&&(
+              <div className="rounded-xl p-2"style={{background:'#0b1220',border:'1px solid #1e2d4a'}}>
+                <div className="text-xs font-bold text-gray-600 mb-1">🎯 Source Signals</div>
+                {/* stacked bar */}
+                <div className="rounded-full overflow-hidden h-2 flex mb-2"style={{background:'#1e2d4a'}}>
+                  {[...t.signalAttribution].sort((a,b)=>b.weight-a.weight).filter(s=>s.weight>0).map((s,i)=>{
+                    const meta=SOURCE_META[s.source]||{color:'#94a3b8'};
+                    return <div key={i} style={{width:`${s.weight}%`,background:meta.color}} title={`${s.source}: ${s.weight}%`}/>;
+                  })}
+                </div>
+                {[...t.signalAttribution].sort((a,b)=>b.weight-a.weight).map((s,i)=>{
+                  const meta=SOURCE_META[s.source]||{icon:'❓',color:'#94a3b8'};
+                  const vc=VERDICT_COLOR[s.verdict]||'#94a3b8';
+                  return s.verdict==='NO_DATA'?null:(
+                    <div key={i} className="flex items-start gap-1.5 mt-1">
+                      <span style={{fontSize:'11px'}}>{meta.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-xs font-bold"style={{color:meta.color}}>{s.source}</span>
+                        <span className="text-xs ml-1"style={{color:meta.color}}>{s.weight}%</span>
+                        <span className="text-xs ml-1 px-1 rounded-full"style={{background:vc+'20',color:vc,fontSize:'9px'}}>{s.verdict}</span>
+                        <div className="text-xs text-gray-600 leading-snug">{s.signal}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {/* reasoning from last analysis */}
+            {t.right&&(
+              <div className="rounded-xl p-2"style={{background:'#0b1220',border:'1px solid #1e2d4a'}}>
+                <div className="text-xs font-bold text-gray-600 mb-1">📝 Analysis Notes</div>
+                <div className="text-xs text-gray-400 leading-relaxed">{t.right}</div>
               </div>
             )}
             {/* progress bar */}
