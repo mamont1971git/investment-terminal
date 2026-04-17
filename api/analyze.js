@@ -387,6 +387,7 @@ Respond with a JSON object (no markdown, pure JSON):
 }
 
 CRITICAL RULES:
+- NEVER recommend BUY for tickers that are already in OPEN PAPER TRADES above. These tickers are ALREADY HELD: ${openTickers.length ? openTickers.join(', ') : 'none'}. Only recommend new tickers not in this list. Handle existing positions in the "positions" array with HOLD/TAKE_PROFIT/EXIT_NOW/TIGHTEN_STOP.
 - For "full analysis" or "run investment analysis": ONLY return BUY (score≥65) and WATCHLIST (score 50-64) in opportunities. Do NOT include SKIP entries — they waste space. Focus on actionable items only.
 - For "score" commands on a specific ticker: include the full verdict even if SKIP.
 - For "portfolio review": focus entirely on positions array with detailed actions. Opportunities array can be empty.
@@ -490,10 +491,19 @@ Scoring framework additions:
   analysis._model = modelId;
 
   // Auto-create Order Drafts for BUY opportunities with score ≥ 65
+  // Skip tickers that already have open positions to prevent duplicates
+  const openTickerSet = new Set(openFormatted.map(t => t.ticker.toUpperCase()).filter(Boolean));
   const draftsCreated = [];
+  const draftsSkipped = [];
   if (NOTION_TOKEN && ALPHA_KEY && analysis.opportunities) {
     for (const opp of analysis.opportunities) {
       if (opp.action === 'BUY' && opp.score >= 65 && opp.ticker) {
+        // Prevent duplicate positions
+        if (openTickerSet.has(opp.ticker.toUpperCase())) {
+          draftsSkipped.push({ ticker: opp.ticker, reason: 'Already have an open position' });
+          opp._skippedDraft = true;
+          continue;
+        }
         // ALWAYS fetch live price — never trust Claude's price suggestion
         let price = null;
         try {
@@ -523,6 +533,7 @@ Scoring framework additions:
   }
 
   analysis.draftsCreated = draftsCreated;
+  analysis.draftsSkipped = draftsSkipped;
   // Collect price alerts for opportunities that couldn't get live prices
   analysis.priceAlerts = (analysis.opportunities || [])
     .filter(o => o._priceAlert)
