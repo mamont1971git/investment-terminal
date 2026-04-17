@@ -81,6 +81,7 @@ async function fetchRecentClosed(token) {
 function formatTrade(p) {
   const props = p.properties;
   return {
+    notionId: p.id,
     ticker: props['Ticker']?.rich_text?.[0]?.plain_text || '',
     strategy: props['Strategy']?.select?.name || '',
     entry: props['Entry Price']?.number,
@@ -94,6 +95,29 @@ function formatTrade(p) {
     lesson: props['Lesson Learned']?.rich_text?.[0]?.plain_text || '',
     sim: props['Simulation Mode']?.checkbox,
   };
+}
+
+// Update a Notion page with latest attribution + reasoning from analysis
+function updatePositionInNotion(pageId, signalAttribution, reasoning, token) {
+  const props = {};
+  if (signalAttribution && signalAttribution.length) {
+    props['Signal Sources'] = { multi_select: signalAttribution.map(s => ({ name: s.source })) };
+    props['Signal Attribution'] = { rich_text: [{ text: { content: JSON.stringify(signalAttribution).slice(0, 2000) } }] };
+  }
+  if (reasoning) {
+    props['What Went Right'] = { rich_text: [{ text: { content: reasoning.slice(0, 2000) } }] };
+  }
+  if (!Object.keys(props).length) return Promise.resolve();
+  const body = JSON.stringify({ properties: props });
+  return new Promise(resolve => {
+    const req = https.request({
+      hostname: 'api.notion.com', path: `/v1/pages/${pageId}`, method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) }
+    }, res => { res.resume(); resolve(); });
+    req.on('error', () => resolve());
+    req.write(body); req.end();
+  });
 }
 
 // ── Technical Analysis: fetch OHLCV via Finnhub candles ─────────────────
@@ -400,6 +424,17 @@ Scoring framework additions:
   } catch(e) {
     // If JSON parse fails, return raw text in a wrapper
     return res.json({ raw: analysisText, parseError: e.message });
+  }
+
+  // Persist attribution + reasoning back to Notion for open positions
+  // This ensures position cards show attribution on next dashboard load (without re-running analysis)
+  if (NOTION_TOKEN && analysis.positions) {
+    const tickerToNotionId = {};
+    for (const t of openFormatted) { if (t.ticker && t.notionId) tickerToNotionId[t.ticker] = t.notionId; }
+    const updatePromises = analysis.positions
+      .filter(p => p.ticker && tickerToNotionId[p.ticker] && p.signalAttribution)
+      .map(p => updatePositionInNotion(tickerToNotionId[p.ticker], p.signalAttribution, p.reasoning, NOTION_TOKEN));
+    if (updatePromises.length) await Promise.all(updatePromises).catch(() => {});
   }
 
   // Auto-create Order Drafts for BUY opportunities with score ≥ 65
