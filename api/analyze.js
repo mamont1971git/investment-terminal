@@ -1213,27 +1213,44 @@ Be constructive but unflinching. Every recommendation must be specific and imple
     // Extract all recommendations across runs
     const allRecs = successfulRuns.map(r => r.parsed.recommendations || []);
 
-    // Build a fingerprint for each rec: category + severity + direction (first 50 chars of paramAfter)
+    // Semantic fingerprint: category + severity (primary), with keyword extraction for display
+    // Two recs with same category+severity are the SAME finding expressed differently
     function recFingerprint(rec) {
-      return `${rec.category}::${rec.severity}::${(rec.paramAfter || '').slice(0, 80).toLowerCase().replace(/\s+/g,' ')}`;
+      return `${rec.category}::${rec.severity}`;
     }
 
-    // Count how many runs each unique fingerprint appears in
+    // Extract key terms from title for display grouping
+    function extractKeyTerms(title) {
+      return (title || '').toLowerCase()
+        .replace(/[^a-z0-9\s]/g, '')
+        .split(/\s+/)
+        .filter(w => w.length > 3 && !['that','this','from','with','have','been','into','open','data'].includes(w))
+        .slice(0, 5)
+        .sort()
+        .join(',');
+    }
+
+    // Count how many runs each category+severity combo appears in
     const fpCounts = {};
-    const fpExamples = {};
+    const fpExamples = {}; // best example per fingerprint (longest title)
+    const fpAllTitles = {}; // all titles seen for this fingerprint
     for (let i = 0; i < allRecs.length; i++) {
       const seen = new Set(); // dedupe within a single run
       for (const rec of allRecs[i]) {
         const fp = recFingerprint(rec);
         if (!seen.has(fp)) {
           fpCounts[fp] = (fpCounts[fp] || 0) + 1;
-          if (!fpExamples[fp]) fpExamples[fp] = rec;
+          if (!fpExamples[fp] || (rec.title || '').length > (fpExamples[fp].title || '').length) {
+            fpExamples[fp] = rec;
+          }
+          if (!fpAllTitles[fp]) fpAllTitles[fp] = [];
+          fpAllTitles[fp].push(rec.title);
           seen.add(fp);
         }
       }
     }
 
-    // Also match by category alone (looser match)
+    // Category-level consistency (how many runs flagged this category at all)
     const catCounts = {};
     for (let i = 0; i < allRecs.length; i++) {
       const seen = new Set();
@@ -1254,6 +1271,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
         totalRuns: N,
         stability: Math.round((count / N) * 100),
         example: fpExamples[fp],
+        variations: fpAllTitles[fp] || [],
       }))
       .sort((a, b) => b.stability - a.stability);
 
@@ -1265,6 +1283,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
         totalRuns: N,
         stability: Math.round((count / N) * 100),
         example: fpExamples[fp],
+        variations: fpAllTitles[fp] || [],
       }))
       .sort((a, b) => b.stability - a.stability);
 

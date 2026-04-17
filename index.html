@@ -2317,9 +2317,9 @@ function DailyBrief(){
                 {consistencyReport.stableRecommendations.length>0&&(
                   <div>
                     <div className="text-xs font-semibold text-green-400 mb-1.5">
-                      Stable Recommendations (appeared in 60%+ of runs)
+                      Stable Findings (same category+severity in 60%+ of runs)
                     </div>
-                    <div className="space-y-1">
+                    <div className="space-y-1.5">
                       {consistencyReport.stableRecommendations.map((sr,i)=>{
                         const rec=sr.example;
                         const sevColor=rec.severity==='critical'?'#ef4444':rec.severity==='high'?'#f97316':rec.severity==='medium'?'#f59e0b':'#94a3b8';
@@ -2340,6 +2340,14 @@ function DailyBrief(){
                               <span className="text-xs font-semibold text-gray-200">{rec.title}</span>
                               <span className="text-xs text-gray-600 ml-auto">{sr.appearedIn}/{sr.totalRuns} runs</span>
                             </div>
+                            {sr.variations&&sr.variations.length>1&&(
+                              <div className="mt-1 pl-2 border-l-2"style={{borderColor:'#22c55e33'}}>
+                                <div className="text-xs text-gray-600 mb-0.5">Phrased as:</div>
+                                {sr.variations.map((v,j)=>(
+                                  <div key={j} className="text-xs text-gray-500">• {v}</div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -2351,7 +2359,7 @@ function DailyBrief(){
                 {consistencyReport.unstableRecommendations.length>0&&(
                   <div>
                     <div className="text-xs font-semibold text-red-400 mb-1.5">
-                      Unstable — Noise (appeared in &lt;60% of runs)
+                      Inconsistent Findings (category+severity in &lt;60% of runs)
                     </div>
                     <div className="space-y-1">
                       {consistencyReport.unstableRecommendations.map((ur,i)=>(
@@ -2360,6 +2368,7 @@ function DailyBrief(){
                           <div className="flex items-center gap-2">
                             <span className="text-xs font-black px-1.5 py-0.5 rounded"
                               style={{background:'#ef444422',color:'#ef4444'}}>{ur.stability}%</span>
+                            <span className="text-xs text-gray-500">{ur.example.severity}</span>
                             <span className="text-xs text-gray-500">{ur.example.category}</span>
                             <span className="text-xs text-gray-400">{ur.example.title}</span>
                             <span className="text-xs text-gray-600 ml-auto">{ur.appearedIn}/{ur.totalRuns} runs</span>
