@@ -24,14 +24,21 @@ function httpsGet(url, headers={}) {
 // ── World Monitor: live geopolitical + macro intelligence ───────────────
 async function fetchWorldMonitor() {
   const WM = 'https://api.worldmonitor.app';
-  const results = { macroSignals: null, fearGreed: null, geopolitical: null, newsHeadlines: null };
+  const results = { macroSignals: null, fearGreed: null, geopolitical: null, newsHeadlines: null, earningsCalendar: null, economicCalendar: null };
   try {
-    // Fetch all 4 endpoints in parallel — free, no auth needed
-    const [macroR, fgR, simR, newsR] = await Promise.all([
+    // Build date range for calendars: today → +14 days
+    const now = new Date();
+    const fromDate = now.toISOString().split('T')[0];
+    const toDate = new Date(now.getTime() + 14 * 86400000).toISOString().split('T')[0];
+
+    // Fetch all 6 endpoints in parallel — free, no auth needed
+    const [macroR, fgR, simR, newsR, earningsR, econR] = await Promise.all([
       httpsGet(`${WM}/api/economic/v1/get-macro-signals`),
       httpsGet(`${WM}/api/market/v1/get-fear-greed-index`),
       httpsGet(`${WM}/api/forecast/v1/get-simulation-outcome`),
       httpsGet(`${WM}/api/news/v1/list-feed-digest?variant=full&lang=en`),
+      httpsGet(`${WM}/api/market/v1/list-earnings-calendar?fromDate=${fromDate}&toDate=${toDate}`),
+      httpsGet(`${WM}/api/economic/v1/get-economic-calendar?fromDate=${fromDate}&toDate=${toDate}`),
     ]);
 
     // 1. Macro Signals — verdict, bullish count, signal statuses
@@ -92,6 +99,27 @@ async function fetchWorldMonitor() {
         }
       }
       results.newsHeadlines = headlines.slice(0, 12); // cap at 12 headlines
+    } catch {}
+
+    // 5. Earnings Calendar — next 2 weeks, filtered to relevant tickers
+    try {
+      const earn = JSON.parse(earningsR.body);
+      const allEarnings = earn.earnings || [];
+      // Keep: tickers in portfolio, plus top market-cap names (max 15 total to stay lean)
+      results.earningsCalendar = allEarnings
+        .filter(e => e.symbol && e.date)
+        .map(e => ({ symbol: e.symbol, date: e.date, time: e.time || '', estimate: e.epsEstimate, name: e.name }))
+        .slice(0, 20); // cap to keep prompt lean
+    } catch {}
+
+    // 6. Economic Calendar — upcoming macro events (FOMC, CPI, NFP, etc.)
+    try {
+      const econ = JSON.parse(econR.body);
+      const events = econ.events || [];
+      results.economicCalendar = events
+        .filter(e => e.event || e.name)
+        .map(e => ({ date: e.date, event: e.event || e.name, country: e.country, impact: e.impact, actual: e.actual, forecast: e.forecast, previous: e.previous }))
+        .slice(0, 15); // cap at 15 events
     } catch {}
   } catch {} // outer catch — if entire WM is down, proceed without it
 
@@ -401,6 +429,28 @@ module.exports = async (req, res) => {
         wmContext += `  [${h.category}] ${h.title} (${h.source||''})\n`;
       }
     }
+
+    if (wm.earningsCalendar && wm.earningsCalendar.length) {
+      // Filter to show portfolio tickers first, then next notable ones
+      const portfolioTickers = new Set(openTickers.map(t => t.toUpperCase()));
+      const portfolio = wm.earningsCalendar.filter(e => portfolioTickers.has(e.symbol?.toUpperCase()));
+      const others = wm.earningsCalendar.filter(e => !portfolioTickers.has(e.symbol?.toUpperCase())).slice(0, 10);
+      const show = [...portfolio, ...others];
+      if (show.length) {
+        wmContext += `\nUPCOMING EARNINGS (next 2 weeks):\n`;
+        for (const e of show) {
+          const flag = portfolioTickers.has(e.symbol?.toUpperCase()) ? ' ⚠️ IN PORTFOLIO' : '';
+          wmContext += `  ${e.date} ${e.time||''} — ${e.symbol} (${e.name||''}) EPS est: ${e.estimate||'?'}${flag}\n`;
+        }
+      }
+    }
+
+    if (wm.economicCalendar && wm.economicCalendar.length) {
+      wmContext += `\nUPCOMING ECONOMIC EVENTS:\n`;
+      for (const e of wm.economicCalendar) {
+        wmContext += `  ${e.date} — ${e.event} (${e.country||''}) Impact: ${e.impact||'?'} | Forecast: ${e.forecast||'?'} | Prev: ${e.previous||'?'}\n`;
+      }
+    }
   }
 
   // Determine Fear & Greed display — prefer World Monitor composite over CNN
@@ -541,7 +591,7 @@ SIGNAL ATTRIBUTION RULES:
   2. "CNN Fear & Greed" — current market sentiment from VIX/F&G. If VIX data available, use it as proxy
   3. "Capitol Trades" — any known congressional trading activity for this ticker. If none known, say "No recent congressional trades detected" with verdict NO_DATA and weight 0
   4. "Finviz Screener" — whether this ticker appears in oversold/breakout screeners based on its current technicals. Infer from the computed indicators whether it would show up
-  5. "Earnings Calendar" — proximity to next earnings, whether it's a catalyst or risk. If unknown, estimate from typical schedule
+  5. "Earnings Calendar" — use the UPCOMING EARNINGS data from World Monitor above. Flag if a ticker reports within 7 days (risk for mean reversion, catalyst for momentum). If not in calendar, say "No earnings in next 2 weeks"
   6. "Sector Momentum" — how this ticker's sector is performing (tech, gold, healthcare, etc.)
   7. "World Monitor" — MANDATORY. Use the World Monitor live intelligence above: macro signals verdict, geopolitical threat theaters, fear/greed composite breakdown, and news headlines. This is REAL LIVE DATA — cite specific values (e.g., macro verdict, theater names, F&G composite score).
 - Optionally add "Insider Activity" if relevant
@@ -629,6 +679,8 @@ Scoring framework additions:
     fearGreed: wm.fearGreed ? `${wm.fearGreed.compositeScore} (${wm.fearGreed.compositeLabel})` : null,
     geoTheaters: wm.geopolitical?.theaters?.map(t => t.label) || [],
     newsCount: wm.newsHeadlines?.length || 0,
+    earningsCount: wm.earningsCalendar?.length || 0,
+    econEventsCount: wm.economicCalendar?.length || 0,
   };
 
   // Auto-create Order Drafts for BUY opportunities with score ≥ 65
