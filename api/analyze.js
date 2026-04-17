@@ -411,8 +411,14 @@ module.exports = async (req, res) => {
   const command = parsed.command || 'run investment analysis';
   const mode = parsed.mode || 'full'; // 'quick' = Haiku (cheap), 'full' = Sonnet (deep + attribution)
 
+  // Detect single-ticker assessment mode
+  const tickerMatch = command.match(/^score\s+([A-Z]{1,5})$/i) || command.match(/^assess\s+([A-Z]{1,5})$/i);
+  const assessTicker = parsed.ticker?.toUpperCase() || (tickerMatch ? tickerMatch[1].toUpperCase() : null);
+  const assessThesis = parsed.thesis || '';
+  const isAssessMode = !!assessTicker;
+
   // Fetch context — quick mode skips closed trades and limits TA
-  const isQuick = mode === 'quick';
+  const isQuick = mode === 'quick' && !isAssessMode;
   const [market, openTrades, closedTrades, worldMonitor, walletState] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
@@ -425,9 +431,10 @@ module.exports = async (req, res) => {
   const closedFormatted = closedTrades.map(formatTrade);
   const today = new Date().toDateString();
 
-  // Fetch technical analysis — quick mode only fetches SPY + open positions
+  // Fetch technical analysis — quick mode only fetches SPY + open positions + assess target
   const openTickers = openFormatted.map(t => t.ticker).filter(Boolean);
-  const taTickers = ['SPY', ...openTickers]; // no limit — Finnhub 60 calls/min
+  const taTickers = ['SPY', ...openTickers];
+  if (assessTicker && !taTickers.includes(assessTicker)) taTickers.push(assessTicker);
   let taData = {};
   if (ALPHA_KEY) {
     try { taData = await fetchTechnicalData(taTickers, ALPHA_KEY); } catch {}
@@ -573,6 +580,20 @@ RULES:
 - If any position is near its stop-loss or TP1, flag urgency as "urgent" or "watch".`;
 
   // ── FULL MODE: Sonnet — deep analysis with attribution ─────────────────
+  const attributionRulesText = `- Every position and opportunity MUST include a "signalAttribution" array with ALL 7 core sources.
+- Each entry has: source (exact name from list), weight (0-100, all weights must sum to 100), signal (1 sentence what this source specifically says for THIS ticker), verdict (BULLISH/BEARISH/NEUTRAL/NO_DATA).
+- ALWAYS include ALL of these 7 sources for every ticker:
+  1. "Technical Analysis" — cite specific RSI, MACD, Z-Score, Bollinger, OBV values from computed data above
+  2. "CNN Fear & Greed" — current market sentiment from VIX/F&G. If VIX data available, use it as proxy
+  3. "Capitol Trades" — any known congressional trading activity for this ticker. If none known, say "No recent congressional trades detected" with verdict NO_DATA and weight 0
+  4. "Finviz Screener" — whether this ticker appears in oversold/breakout screeners based on its current technicals. Infer from the computed indicators whether it would show up
+  5. "Earnings Calendar" — use the UPCOMING EARNINGS data from World Monitor above. Flag if a ticker reports within 7 days (risk for mean reversion, catalyst for momentum). If not in calendar, say "No earnings in next 2 weeks"
+  6. "Sector Momentum" — how this ticker's sector is performing (tech, gold, healthcare, etc.)
+  7. "World Monitor" — MANDATORY. Use the World Monitor live intelligence above: macro signals verdict, geopolitical threat theaters, fear/greed composite breakdown, and news headlines. This is REAL LIVE DATA — cite specific values (e.g., macro verdict, theater names, F&G composite score).
+- Optionally add "Insider Activity" if relevant
+- Sources with NO_DATA get weight 0. Remaining weights must sum to 100.
+- The signal field should explain HOW this source affected the analysis — not just state a fact but connect it to the recommendation.`;
+
   const fullContext = `${marketHeader}
 
 RECENT CLOSED TRADES (last ${closedFormatted.length}):
@@ -653,21 +674,73 @@ CRITICAL RULES:
 - In your reasoning for each position/opportunity, cite at least 2-3 specific indicator values.
 
 SIGNAL ATTRIBUTION RULES:
-- Every position and opportunity MUST include a "signalAttribution" array with ALL 6 core sources.
-- Each entry has: source (exact name from list), weight (0-100, all weights must sum to 100), signal (1 sentence what this source specifically says for THIS ticker), verdict (BULLISH/BEARISH/NEUTRAL/NO_DATA).
-- ALWAYS include ALL of these 7 sources for every ticker:
-  1. "Technical Analysis" — cite specific RSI, MACD, Z-Score, Bollinger, OBV values from computed data above
-  2. "CNN Fear & Greed" — current market sentiment from VIX/F&G. If VIX data available, use it as proxy
-  3. "Capitol Trades" — any known congressional trading activity for this ticker. If none known, say "No recent congressional trades detected" with verdict NO_DATA and weight 0
-  4. "Finviz Screener" — whether this ticker appears in oversold/breakout screeners based on its current technicals. Infer from the computed indicators whether it would show up
-  5. "Earnings Calendar" — use the UPCOMING EARNINGS data from World Monitor above. Flag if a ticker reports within 7 days (risk for mean reversion, catalyst for momentum). If not in calendar, say "No earnings in next 2 weeks"
-  6. "Sector Momentum" — how this ticker's sector is performing (tech, gold, healthcare, etc.)
-  7. "World Monitor" — MANDATORY. Use the World Monitor live intelligence above: macro signals verdict, geopolitical threat theaters, fear/greed composite breakdown, and news headlines. This is REAL LIVE DATA — cite specific values (e.g., macro verdict, theater names, F&G composite score).
-- Optionally add "Insider Activity" if relevant
-- Sources with NO_DATA get weight 0. Remaining weights must sum to 100.
-- The signal field should explain HOW this source affected the analysis — not just state a fact but connect it to the recommendation.`;
+${attributionRulesText}`;
 
-  const context = isQuick ? quickContext : fullContext;
+  // ── ASSESS MODE: deep single-ticker analysis ──────────────────────────
+  const assessContext = assessTicker ? `${marketHeader}
+
+TARGET TICKER: ${assessTicker}
+${assessThesis ? `\nUSER THESIS:\n${assessThesis}\n` : ''}
+${taData[assessTicker] ? `FULL TECHNICAL ANALYSIS for ${assessTicker}:\n${formatTA(taData[assessTicker])}\n` : `⚠️ No TA data available for ${assessTicker} — ticker may be invalid or data delayed.\n`}
+ALREADY HELD: ${openTickers.includes(assessTicker) ? 'YES — already have an open position' : 'NO'}
+
+Perform a DEEP ASSESSMENT of ${assessTicker}. Score it rigorously using the composite framework.
+${assessThesis ? 'Evaluate the user thesis — confirm or challenge each claim with data.' : ''}
+
+Respond with JSON (no markdown):
+{
+  "ticker": "${assessTicker}",
+  "score": number_0_to_100,
+  "verdict": "STRONG BUY|BUY|WATCHLIST|HOLD|AVOID",
+  "headline": "one-line summary",
+  "thesisEvaluation": ${assessThesis ? '"2-3 sentences evaluating the user thesis — what holds up, what doesn\'t"' : 'null'},
+  "technicalSetup": {
+    "score": number_0_to_40,
+    "summary": "key TA signals with specific indicator values",
+    "trend": "BULLISH|BEARISH|NEUTRAL",
+    "keyLevels": {"support": number, "resistance": number, "pivot": number}
+  },
+  "fundamentalSetup": {
+    "score": number_0_to_30,
+    "summary": "valuation, earnings, sector context",
+    "catalysts": ["upcoming catalyst 1", "catalyst 2"],
+    "risks": ["risk 1", "risk 2"]
+  },
+  "macroAlignment": {
+    "score": number_0_to_20,
+    "summary": "how macro/geopolitical conditions affect this ticker"
+  },
+  "timingScore": {
+    "score": number_0_to_10,
+    "summary": "why now vs later"
+  },
+  "action": "BUY|WATCHLIST|AVOID",
+  "strategy": "Mean Reversion|Breakout Momentum|Earnings Catalyst|Value Play|Sector Rotation",
+  "entryZone": {"low": number, "mid": number, "high": number},
+  "stop": number,
+  "targets": {"tp1": number, "tp2": number, "tp3": number},
+  "positionSizing": {
+    "positionPct": number,
+    "positionDollars": number,
+    "shares": number,
+    "riskDollars": number
+  },
+  "signalAttribution": [
+    {"source": "string", "weight": number, "signal": "string", "verdict": "BULLISH|BEARISH|NEUTRAL"}
+  ],
+  "comparables": ["TICKER1 — why similar", "TICKER2 — why similar"],
+  "waitConditions": "what needs to change before entry (if WATCHLIST/AVOID)",
+  "timeHorizon": "1-3 days|1-2 weeks|2-4 weeks|1-3 months"
+}
+
+CRITICAL:
+- Use the COMPUTED technical indicators — reference specific RSI, MACD, Z-Score, Bollinger, Fibonacci values.
+- All 7 signal sources MUST appear in signalAttribution (NO_DATA sources get weight 0).
+- positionDollars must not exceed wallet cash ($${walletState.cashBalance.toFixed(2)}).
+- Be brutally honest. If the thesis is wrong, say so. Score below 40 = AVOID.
+${attributionRulesText}` : null;
+
+  const context = isAssessMode ? assessContext : (isQuick ? quickContext : fullContext);
 
 
   // System prompts — quick mode is lightweight, full mode has scoring framework
@@ -692,11 +765,24 @@ Scoring framework additions:
 - 1% Rule: if computed position size exceeds 5% of portfolio, cap at 5%
 - ATR-based stops: prefer 2×ATR stop over fixed 7% when ATR data available`;
 
-  // Call Claude API — Haiku for quick checks, Sonnet for deep analysis
+  // Assessment mode system prompt
+  const assessSystemPrompt = `You are Daniel's personal investment analyst performing a DEEP single-ticker assessment. Apply the composite scoring framework rigorously. Return only valid JSON, no markdown.
+
+You have COMPUTED technical indicators from real OHLCV data and LIVE World Monitor intelligence. Reference specific values — do not estimate when real data is provided.
+
+Scoring dimensions:
+- Technical Setup (0-40): RSI, MACD, Z-Score, Bollinger, Fibonacci, OBV, volume, EMA alignment
+- Fundamental Setup (0-30): valuation, earnings, sector strength, catalysts
+- Macro Alignment (0-20): regime fit, geopolitical risk, sector rotation
+- Timing (0-10): entry timing quality, upcoming catalysts/risks
+
+Be brutally honest. A score below 40 = AVOID. Above 75 = strong conviction. Challenge weak theses.`;
+
+  // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
-  const modelId = isQuick ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
+  const modelId = (isQuick && !isAssessMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
   const maxTokens = isQuick ? 2048 : 8192;
-  const systemPrompt = isQuick ? quickSystemPrompt : fullSystemPrompt;
+  const systemPrompt = isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt);
 
   let analysisText;
   try {
@@ -741,7 +827,8 @@ Scoring framework additions:
     }
   }
   analysis._attributionSync = attributionUpdates;
-  analysis._mode = mode;
+  analysis._mode = isAssessMode ? 'assess' : mode;
+  analysis._assessTicker = assessTicker || null;
   analysis._model = modelId;
   analysis._worldMonitor = {
     macroVerdict: wm.macroSignals?.verdict || null,
