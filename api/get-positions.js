@@ -143,7 +143,7 @@ module.exports = async (req, res) => {
   const uniqueTickers = [...new Set(openTrades.map(t => t.ticker).filter(Boolean))];
   const prices = {};
 
-  // Fetch OHLCV for TA indicators (only first 3 to conserve API calls)
+  // Fetch OHLCV for TA indicators (first 3 get full TA, rest get price-only)
   const taData = {};
   if (ALPHA && computeAll && uniqueTickers.length > 0) {
     for (const ticker of uniqueTickers.slice(0, 3)) {
@@ -153,9 +153,15 @@ module.exports = async (req, res) => {
       } catch {}
       if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 400));
     }
+    // Fetch price-only for remaining tickers that didn't get OHLCV
+    const remaining = uniqueTickers.filter(t => !taData[t]);
+    for (const ticker of remaining.slice(0, 5)) {
+      prices[ticker] = await getPrice(ticker, ALPHA);
+      if (remaining.length > 1) await new Promise(r => setTimeout(r, 300));
+    }
   } else if (ALPHA && uniqueTickers.length > 0) {
-    // Fallback: just fetch prices
-    for (const ticker of uniqueTickers.slice(0, 5)) {
+    // No TA engine: just fetch prices for all
+    for (const ticker of uniqueTickers.slice(0, 8)) {
       prices[ticker] = await getPrice(ticker, ALPHA);
       if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 300));
     }
