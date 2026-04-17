@@ -1229,7 +1229,7 @@ function DailyBrief(){
                 Open Paper Trades ({positions.length})
               </span>
               <div className="flex gap-2">
-                <button onClick={async()=>{try{const r=await fetch('/api/sync-positions',{method:'POST'});const d=await r.json();alert(`Sync done: ${d.synced} fixed, ${d.skipped} ok, ${d.errors} errors`);if(d.synced>0)fetchPositions();}catch(e){alert('Sync error: '+e.message);}}} className="text-xs text-purple-400 hover:text-purple-300">🔄 Sync</button>
+                <button onClick={async()=>{try{const r=await fetch('/api/get-positions',{method:'POST'});const d=await r.json();alert(`Sync done: ${d.synced} fixed, ${d.skipped} ok, ${d.errors} errors`);if(d.synced>0)fetchPositions();}catch(e){alert('Sync error: '+e.message);}}} className="text-xs text-purple-400 hover:text-purple-300">🔄 Sync</button>
                 <button onClick={fetchPositions} className="text-xs text-blue-400 hover:text-blue-300">↻ Refresh</button>
               </div>
             </div>

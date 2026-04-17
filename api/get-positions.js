@@ -72,6 +72,7 @@ function formatTrade(page) {
   return {
     id: page.id,
     url: page.url,
+    title: p['Trade']?.title?.[0]?.plain_text || '',
     ticker: p['Ticker']?.rich_text?.[0]?.plain_text || '',
     strategy: p['Strategy']?.select?.name || '',
     status: p['Status']?.select?.name || '',
@@ -101,13 +102,80 @@ function formatTrade(page) {
   };
 }
 
+// ── Sync: normalize open trades to current schema ───────────────────────
+function notionPatch(pageId, props, token) {
+  return new Promise((resolve) => {
+    const data = JSON.stringify({ properties: props });
+    const req = https.request({
+      hostname: 'api.notion.com', path: `/v1/pages/${pageId}`, method: 'PATCH',
+      headers: {
+        'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(data),
+      },
+    }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>{
+      try { resolve({ status: res.statusCode, body: JSON.parse(d) }); } catch { resolve({ status: 500 }); }
+    });});
+    req.on('error', () => resolve({ status: 500 })); req.write(data); req.end();
+  });
+}
+
+function buildSyncFixes(trade) {
+  const fixes = {};
+  const ticker = trade.ticker;
+  const strategy = trade.strategy || 'Paper';
+  const expectedTitle = `🧪 ${ticker} — ${strategy} [SIM]`;
+  if (trade.title !== expectedTitle) fixes['Trade'] = { title: [{ text: { content: expectedTitle } }] };
+  if (trade.status !== 'Paper') fixes['Status'] = { select: { name: 'Paper' } };
+  if (!trade.sim) fixes['Simulation Mode'] = { checkbox: true };
+  if (!trade.rulesFollowed) fixes['Rules Followed'] = { checkbox: true };
+  if (trade.entryPrice && !trade.tp1) fixes['TP1'] = { number: +(trade.entryPrice * 1.08).toFixed(2) };
+  if (trade.entryPrice && !trade.tp2) fixes['TP2'] = { number: +(trade.entryPrice * 1.15).toFixed(2) };
+  if (trade.entryPrice && !trade.tp3) fixes['TP3'] = { number: +(trade.entryPrice * 1.22).toFixed(2) };
+  if (trade.entryPrice && !trade.stopLoss) fixes['Stop-Loss Price'] = { number: +(trade.entryPrice * 0.93).toFixed(2) };
+  return fixes;
+}
+
+async function handleSync(token, res) {
+  const [paperResult, openResult] = await Promise.all([
+    notionQuery(
+      { and: [{ property: 'Status', select: { equals: 'Paper' } }, { property: 'Simulation Mode', checkbox: { equals: true } }] },
+      [{ timestamp: 'created_time', direction: 'descending' }], token, 100
+    ),
+    notionQuery(
+      { and: [{ property: 'Status', select: { equals: 'Open' } }, { property: 'Simulation Mode', checkbox: { equals: false } }] },
+      [{ timestamp: 'created_time', direction: 'descending' }], token, 20
+    ),
+  ]);
+  const allTrades = [...(paperResult.results||[]), ...(openResult.results||[])].map(formatTrade);
+  const synced = [], skipped = [], errors = [];
+
+  for (const trade of allTrades) {
+    if (!trade.ticker) { skipped.push({ id: trade.id, reason: 'No ticker' }); continue; }
+    const fixes = buildSyncFixes(trade);
+    if (!Object.keys(fixes).length) { skipped.push({ ticker: trade.ticker, reason: 'Up to date' }); continue; }
+    try {
+      const r = await notionPatch(trade.id, fixes, token);
+      if (r.status < 300) synced.push({ ticker: trade.ticker, fixes: Object.keys(fixes) });
+      else errors.push({ ticker: trade.ticker, error: r.body?.message || 'Unknown' });
+    } catch (e) { errors.push({ ticker: trade.ticker, error: e.message }); }
+    await new Promise(r => setTimeout(r, 350));
+  }
+  return res.json({ ok: true, total: allTrades.length, synced: synced.length, skipped: skipped.length, errors: errors.length, details: { synced, skipped, errors } });
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Cache-Control', 'no-cache');
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   const TOKEN = process.env.NOTION_TOKEN;
   const ALPHA = process.env.FINNHUB_KEY;
   if (!TOKEN) return res.status(503).json({ error: 'NOTION_TOKEN not set' });
+
+  // POST = sync positions to current schema
+  if (req.method === 'POST') return handleSync(TOKEN, res);
 
   // Fetch open paper trades + recent closed in parallel
   const [openResult, closedResult] = await Promise.all([
