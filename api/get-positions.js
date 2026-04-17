@@ -95,6 +95,10 @@ function formatTrade(page) {
     right: p['What Went Right']?.rich_text?.[0]?.plain_text || '',
     wrong: p['What Went Wrong']?.rich_text?.[0]?.plain_text || '',
     lesson: p['Lesson Learned']?.rich_text?.[0]?.plain_text || '',
+    signalSources: (p['Signal Sources']?.multi_select || []).map(s => s.name),
+    signalAttribution: (() => {
+      try { return JSON.parse(p['Signal Attribution']?.rich_text?.[0]?.plain_text || 'null'); } catch { return null; }
+    })(),
   };
 }
 

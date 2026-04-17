@@ -167,7 +167,7 @@ function formatTA(ta) {
   return lines.join('\n');
 }
 
-async function createDraft(ticker, strategy, score, reasoning, regime, positionPct, entryPrice, token, alphaKey) {
+async function createDraft(ticker, strategy, score, reasoning, regime, positionPct, entryPrice, token, alphaKey, signalAttribution) {
   // Reuse create-draft logic inline
   const stop=+(entryPrice*0.93).toFixed(2),tp1=+(entryPrice*1.08).toFixed(2),
         tp2=+(entryPrice*1.15).toFixed(2),tp3=+(entryPrice*1.22).toFixed(2);
@@ -189,6 +189,11 @@ async function createDraft(ticker, strategy, score, reasoning, regime, positionP
   };
   if(regimeName)props['Market Regime at Entry']={select:{name:regimeName}};
   if(positionPct)props['Position Size %']={number:positionPct};
+  // Store signal attribution
+  if(signalAttribution&&signalAttribution.length){
+    props['Signal Sources']={multi_select:signalAttribution.map(s=>({name:s.source}))};
+    props['Signal Attribution']={rich_text:[{text:{content:JSON.stringify(signalAttribution).slice(0,2000)}}]};
+  }
   const body=JSON.stringify({parent:{database_id:TRADE_DB},properties:props});
   return new Promise(resolve=>{
     const req=https.request({
@@ -283,7 +288,15 @@ Respond with a JSON object in this exact structure (no markdown, pure JSON):
       "currentPrice": number_or_null,
       "pnlPct": number_or_null,
       "reasoning": "2-3 sentences: why this action, what changed, what to watch",
-      "urgency": "urgent|watch|ok"
+      "urgency": "urgent|watch|ok",
+      "signalAttribution": [
+        {
+          "source": "Technical Analysis|Capitol Trades|Finviz Screener|CNN Fear & Greed|World Monitor|Earnings Calendar|Insider Activity|Sector Momentum",
+          "weight": number_0_to_100,
+          "signal": "what this source specifically says now (1 sentence)",
+          "verdict": "BULLISH|BEARISH|NEUTRAL"
+        }
+      ]
     }
   ],
   "opportunities": [
@@ -298,7 +311,15 @@ Respond with a JSON object in this exact structure (no markdown, pure JSON):
       "tp1": number,
       "tp2": number,
       "positionPct": number,
-      "waitingFor": "only for WATCHLIST — what needs to improve"
+      "waitingFor": "only for WATCHLIST — what needs to improve",
+      "signalAttribution": [
+        {
+          "source": "Technical Analysis|Capitol Trades|Finviz Screener|CNN Fear & Greed|World Monitor|Earnings Calendar|Insider Activity|Sector Momentum",
+          "weight": number_0_to_100,
+          "signal": "what this source specifically said (1 sentence)",
+          "verdict": "BULLISH|BEARISH|NEUTRAL"
+        }
+      ]
     }
   ],
   "insights": "1-2 key portfolio observations from trade history",
@@ -319,7 +340,17 @@ CRITICAL RULES:
 - Reference Fibonacci support/resistance levels for entry/exit targets when available.
 - If OBV shows bearish divergence (price up but volume not confirming), flag it as a warning.
 - Z-Score below -2 is a strong mean reversion signal; above +2 is overbought warning.
-- In your reasoning for each position/opportunity, cite at least 2-3 specific indicator values.`;
+- In your reasoning for each position/opportunity, cite at least 2-3 specific indicator values.
+
+SIGNAL ATTRIBUTION RULES:
+- Every position and opportunity MUST include a "signalAttribution" array.
+- Each entry has: source (exact name from list), weight (0-100, all weights must sum to 100), signal (1 sentence what this source says), verdict (BULLISH/BEARISH/NEUTRAL).
+- "Technical Analysis" is ALWAYS included (it uses the computed indicators above).
+- "CNN Fear & Greed" is included whenever VIX/F&G data is available (even as proxy).
+- Only include other sources if you have specific data for them (from user command or market context).
+- If user mentions congress trades, include "Capitol Trades". If ticker came from Finviz screener, include "Finviz Screener".
+- Weight reflects how much each source contributed to your final score/recommendation.
+- Minimum 2 sources per attribution (Technical + at least one market context source).`;
 
 
   // Load system prompt from skill
@@ -386,7 +417,8 @@ Scoring framework additions:
           const draft = await createDraft(
             opp.ticker, opp.strategy, opp.score,
             opp.reasoning, analysis.regime?.name,
-            opp.positionPct, price, NOTION_TOKEN, ALPHA_KEY
+            opp.positionPct, price, NOTION_TOKEN, ALPHA_KEY,
+            opp.signalAttribution
           );
           if (draft.ok) draftsCreated.push(draft);
         }
