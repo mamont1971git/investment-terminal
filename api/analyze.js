@@ -244,20 +244,23 @@ module.exports = async (req, res) => {
 
   let body=''; req.on('data',c=>body+=c);
   await new Promise(r=>req.on('end',r));
-  const { command = 'run investment analysis' } = JSON.parse(body||'{}');
+  const parsed = JSON.parse(body||'{}');
+  const command = parsed.command || 'run investment analysis';
+  const mode = parsed.mode || 'full'; // 'quick' = Haiku (cheap), 'full' = Sonnet (deep + attribution)
 
-  // Fetch all context in parallel
+  // Fetch context — quick mode skips closed trades and limits TA
+  const isQuick = mode === 'quick';
   const [market, openTrades, closedTrades] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
-    NOTION_TOKEN ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
+    (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
   ]);
 
   const openFormatted = openTrades.map(formatTrade);
   const closedFormatted = closedTrades.map(formatTrade);
   const today = new Date().toDateString();
 
-  // Fetch technical analysis for open positions + SPY
+  // Fetch technical analysis — quick mode only fetches SPY + open positions
   const openTickers = openFormatted.map(t => t.ticker).filter(Boolean);
   const taTickers = ['SPY', ...openTickers]; // no limit — Finnhub 60 calls/min
   let taData = {};
@@ -274,9 +277,8 @@ module.exports = async (req, res) => {
     }
   }
 
-  // Build context string for Claude
-  const context = `
-TODAY: ${today}
+  // Build market header (shared by both modes)
+  const marketHeader = `TODAY: ${today}
 
 LIVE MARKET DATA:
 - VIX: ${market.vix ? market.vix.toFixed(2) : 'unavailable (check finance.yahoo.com/quote/^VIX)'}
@@ -285,24 +287,59 @@ LIVE MARKET DATA:
 ${taContext}
 
 OPEN PAPER TRADES (${openFormatted.length}):
-${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}
+${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}`;
+
+  // ── QUICK MODE: Haiku — regime + position status only ──────────────────
+  const quickContext = `${marketHeader}
+
+USER COMMAND: ${command}
+
+Respond with a JSON object (no markdown, pure JSON):
+{
+  "regime": {
+    "name": "MEAN REVERSION ZONE|BREAKOUT ZONE|CAUTION ZONE|EXTREME FEAR",
+    "headline": "one-line summary",
+    "why": "1-2 sentences on current conditions",
+    "action": "recommended action",
+    "vix": number, "fg": number_or_null, "spyAbove": true/false
+  },
+  "positions": [
+    {
+      "ticker": "XXXX",
+      "recommendation": "HOLD|TAKE_PROFIT|EXIT_NOW|TIGHTEN_STOP",
+      "currentPrice": number_or_null,
+      "pnlPct": number_or_null,
+      "reasoning": "1-2 sentences: what to do and why",
+      "urgency": "urgent|watch|ok"
+    }
+  ],
+  "opportunities": [],
+  "stance": "Aggressive|Moderate|Defensive",
+  "nextCheckIn": "time/date"
+}
+
+RULES:
+- Focus on position status and regime. No new opportunities in quick mode.
+- Every position needs a specific recommendation with reasoning.
+- Use the COMPUTED TECHNICAL INDICATORS — cite specific values.
+- If any position is near its stop-loss or TP1, flag urgency as "urgent" or "watch".`;
+
+  // ── FULL MODE: Sonnet — deep analysis with attribution ─────────────────
+  const fullContext = `${marketHeader}
 
 RECENT CLOSED TRADES (last ${closedFormatted.length}):
 ${closedFormatted.length ? closedFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | P&L: ${t.pnl!=null?(t.pnl>0?'+':'')+t.pnl.toFixed(1)+'%':'open'} | Score was: ${t.score||'?'} | Lesson: ${t.lesson||'none'}`).join('\n') : 'None yet'}
 
 USER COMMAND: ${command}
 
-INSTRUCTIONS FOR YOUR RESPONSE:
-Respond with a JSON object in this exact structure (no markdown, pure JSON):
+Respond with a JSON object (no markdown, pure JSON):
 {
   "regime": {
     "name": "MEAN REVERSION ZONE|BREAKOUT ZONE|CAUTION ZONE|EXTREME FEAR",
     "headline": "one-line summary",
     "why": "2-3 sentences explaining current conditions",
     "action": "specific recommended action",
-    "vix": number,
-    "fg": number_or_null,
-    "spyAbove": true/false
+    "vix": number, "fg": number_or_null, "spyAbove": true/false
   },
   "positions": [
     {
@@ -330,9 +367,7 @@ Respond with a JSON object in this exact structure (no markdown, pure JSON):
       "strategy": "Mean Reversion|Breakout Momentum|Earnings Catalyst",
       "reasoning": "3-4 sentences explaining the setup and why now",
       "entryPrice": number,
-      "stop": number,
-      "tp1": number,
-      "tp2": number,
+      "stop": number, "tp1": number, "tp2": number,
       "positionPct": number,
       "waitingFor": "only for WATCHLIST — what needs to improve",
       "signalAttribution": [
@@ -379,11 +414,14 @@ SIGNAL ATTRIBUTION RULES:
 - Sources with NO_DATA get weight 0. Remaining weights must sum to 100.
 - The signal field should explain HOW this source affected the analysis — not just state a fact but connect it to the recommendation.`;
 
+  const context = isQuick ? quickContext : fullContext;
 
-  // Load system prompt from skill
-  const fs = require('fs');
-  const skillPath = '/var/task/investment-skill.md'; // will be embedded at build
-  let systemPrompt = `You are Daniel's personal investment analyst. Apply the composite scoring framework rigorously. Return only valid JSON, no markdown.
+
+  // System prompts — quick mode is lightweight, full mode has scoring framework
+  const quickSystemPrompt = `You are Daniel's investment position monitor. Return only valid JSON, no markdown.
+Check each open position against its stop-loss and take-profit levels using the COMPUTED technical indicators provided. Be concise.`;
+
+  const fullSystemPrompt = `You are Daniel's personal investment analyst. Apply the composite scoring framework rigorously. Return only valid JSON, no markdown.
 
 You have access to COMPUTED technical indicators (RSI, MACD, Bollinger Bands, ATR, OBV, Z-Score, Stochastic, Williams %R, CCI, Fibonacci retracement, SMA/EMA alignment) calculated from real OHLCV price data. ALWAYS reference these computed values in your analysis — do not estimate or guess indicator values when real data is provided.
 
@@ -399,14 +437,17 @@ Scoring framework additions:
 - 1% Rule: if computed position size exceeds 5% of portfolio, cap at 5%
 - ATR-based stops: prefer 2×ATR stop over fixed 7% when ATR data available`;
 
-  // Call Claude API
+  // Call Claude API — Haiku for quick checks, Sonnet for deep analysis
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+  const modelId = isQuick ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
+  const maxTokens = isQuick ? 2048 : 8192;
+  const systemPrompt = isQuick ? quickSystemPrompt : fullSystemPrompt;
 
   let analysisText;
   try {
     const message = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
+      model: modelId,
+      max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: 'user', content: context }],
     });
@@ -426,10 +467,9 @@ Scoring framework additions:
     return res.json({ raw: analysisText, parseError: e.message });
   }
 
-  // Persist attribution + reasoning back to Notion for open positions
-  // This ensures position cards show attribution on next dashboard load (without re-running analysis)
+  // Persist attribution + reasoning back to Notion for open positions (full mode only)
   const attributionUpdates = { attempted: 0, saved: 0, missing: [] };
-  if (NOTION_TOKEN && analysis.positions) {
+  if (!isQuick && NOTION_TOKEN && analysis.positions) {
     const tickerToNotionId = {};
     for (const t of openFormatted) { if (t.ticker && t.notionId) tickerToNotionId[t.ticker] = t.notionId; }
     for (const p of analysis.positions) {
@@ -446,6 +486,8 @@ Scoring framework additions:
     }
   }
   analysis._attributionSync = attributionUpdates;
+  analysis._mode = mode;
+  analysis._model = modelId;
 
   // Auto-create Order Drafts for BUY opportunities with score ≥ 65
   const draftsCreated = [];

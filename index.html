@@ -740,7 +740,7 @@ function AnalysisPanel(){
   const [error,setError]=useState(null);
   const [command,setCommand]=useState('full_analysis');
 
-  const run=async(cmd)=>{
+  const run=async(cmd,mode='full')=>{
     if(window.location.protocol==='file:'){
       setError('Live analysis requires the hosted app. Open investment-terminal-tawny.vercel.app');
       return;
@@ -749,7 +749,7 @@ function AnalysisPanel(){
     try{
       const r=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({command:cmd}),
+        body:JSON.stringify({command:cmd,mode}),
       });
       const d=await r.json();
       if(d.error)throw new Error(d.error);
@@ -759,9 +759,9 @@ function AnalysisPanel(){
   };
 
   const cmds=[
-    {id:'run investment analysis',label:'🤖 Full Analysis',color:'#6366f1',desc:'Signals + recommendations'},
-    {id:'portfolio review',label:'📈 Portfolio Review',color:'#22c55e',desc:'All positions: hold/exit/profit?'},
-    {id:'live market pulse',label:'🌡️ Market Pulse',color:'#3b82f6',desc:'Quick regime check'},
+    {id:'run investment analysis',label:'🤖 Full Analysis',color:'#6366f1',desc:'Deep scan + attribution (Sonnet)',mode:'full'},
+    {id:'portfolio review',label:'📈 Portfolio Review',color:'#22c55e',desc:'Position status (Sonnet)',mode:'full'},
+    {id:'live market pulse',label:'⚡ Quick Check',color:'#f59e0b',desc:'Regime + positions (Haiku)',mode:'quick'},
   ];
 
   const regimeColor=n=>!n?'#94a3b8':n.includes('CAUTION')||n.includes('FEAR')?'#ef4444':n.includes('BREAKOUT')?'#22c55e':'#6366f1';
@@ -775,7 +775,7 @@ function AnalysisPanel(){
         </div>
         <div className="flex gap-2 flex-wrap">
           {cmds.map(c=>(
-            <button key={c.id} onClick={()=>run(c.id)} disabled={loading}
+            <button key={c.id} onClick={()=>run(c.id,c.mode||'full')} disabled={loading}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all"
               style={{
                 background:loading&&command===c.id?c.color+'40':c.color+'18',
@@ -809,6 +809,17 @@ function AnalysisPanel(){
       {/* results */}
       {result&&!loading&&(
         <div className="fade">
+          {/* model badge */}
+          {result._model&&(
+            <div className="px-4 pt-2 pb-0 flex items-center gap-2"style={{background:'#08101e'}}>
+              <span className="text-xs px-2 py-0.5 rounded-full font-bold"
+                style={{background:result._mode==='quick'?'#f59e0b20':'#6366f120',
+                  color:result._mode==='quick'?'#f59e0b':'#6366f1',
+                  border:`1px solid ${result._mode==='quick'?'#f59e0b':'#6366f1'}33`}}>
+                {result._mode==='quick'?'⚡ Quick':'🔬 Deep'} — {result._model.includes('haiku')?'Haiku':'Sonnet'}
+              </span>
+            </div>
+          )}
           {/* regime */}
           {result.regime&&(
             <div className="px-4 py-4"
