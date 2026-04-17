@@ -1258,6 +1258,8 @@ function DailyBrief(){
   const [closedTrades,setClosedTrades]=useState([]);
   const [stats,setStats]=useState(null);
   const [wallet,setWallet]=useState(null);
+  const [sourceWeights,setSourceWeights]=useState(null);
+  const [portfolioMetrics,setPortfolioMetrics]=useState(null);
   const [posStatus,setPosStatus]=useState('idle'); // idle | loading | done | failed
 
   const fetchPositions=useCallback(async()=>{
@@ -1270,6 +1272,8 @@ function DailyBrief(){
       if(d.closedTrades)setClosedTrades(d.closedTrades);
       if(d.stats)setStats(d.stats);
       if(d.wallet)setWallet(d.wallet);
+      if(d.sourceWeights)setSourceWeights(d.sourceWeights);
+      if(d.portfolioMetrics)setPortfolioMetrics(d.portfolioMetrics);
       setPosStatus('done');
     }catch(e){
       logError('FETCH_POSITIONS',e.message,{});
@@ -1595,6 +1599,81 @@ function DailyBrief(){
 
         {/* ── quick commands ── */}
         <QuickCommands/>
+
+        {/* ── performance & signal quality ── */}
+        {(sourceWeights||portfolioMetrics)&&(
+          <Card>
+            <div className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-gray-500"
+              style={{borderBottom:'1px solid #0f1828'}}>
+              <span style={{marginRight:'6px'}}>📊</span> Performance & Signal Quality
+              {sourceWeights&&<span className="text-gray-600 ml-2">({sourceWeights.tradesAnalyzed} trades analyzed)</span>}
+            </div>
+
+            {/* Portfolio metrics row */}
+            {portfolioMetrics&&(
+              <div className="px-4 py-3"style={{borderBottom:'1px solid #0f1828',background:'#0a0e1a'}}>
+                <div className="grid grid-cols-5 gap-3 text-center text-xs">
+                  {[
+                    {l:'Win Rate',v:`${portfolioMetrics.winRate}%`,c:portfolioMetrics.winRate>=55?'#22c55e':'#f59e0b'},
+                    {l:'Expectancy',v:`${portfolioMetrics.expectancy>=0?'+':''}${portfolioMetrics.expectancy}%`,
+                      c:portfolioMetrics.expectancy>=0?'#22c55e':'#ef4444'},
+                    {l:'Profit Factor',v:portfolioMetrics.profitFactor===Infinity?'∞':portfolioMetrics.profitFactor,
+                      c:portfolioMetrics.profitFactor>=1.5?'#22c55e':portfolioMetrics.profitFactor>=1?'#f59e0b':'#ef4444'},
+                    {l:'Max DD',v:`-${portfolioMetrics.maxDrawdown}%`,c:portfolioMetrics.maxDrawdown<=5?'#22c55e':'#ef4444'},
+                    {l:'R:R',v:portfolioMetrics.riskRewardRatio?`${portfolioMetrics.riskRewardRatio}:1`:'—',
+                      c:portfolioMetrics.riskRewardRatio>=2?'#22c55e':'#f59e0b'},
+                  ].map((s,i)=>(
+                    <div key={i}>
+                      <div className="text-gray-600 mb-1">{s.l}</div>
+                      <div className="font-black"style={{color:s.c}}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-center gap-4 mt-2 text-xs text-gray-600">
+                  <span>Best streak: <span className="text-green-400 font-bold">{portfolioMetrics.maxWinStreak}W</span></span>
+                  <span>Worst streak: <span className="text-red-400 font-bold">{portfolioMetrics.maxLossStreak}L</span></span>
+                  <span>Total: <span style={{color:portfolioMetrics.totalReturn>=0?'#22c55e':'#ef4444',fontWeight:700}}>
+                    {portfolioMetrics.totalReturn>=0?'+':''}{portfolioMetrics.totalReturn}%
+                  </span></span>
+                </div>
+              </div>
+            )}
+
+            {/* Signal source rankings */}
+            {sourceWeights&&sourceWeights.ranked&&(
+              <div className="px-4 py-3">
+                <div className="text-xs text-gray-500 mb-2 font-semibold">
+                  Signal Source Rankings <span className="text-gray-600">(Multiplicative Weights Algorithm)</span>
+                </div>
+                <div className="space-y-2">
+                  {sourceWeights.ranked.filter(s=>s.totalTrades>0).map((s,i)=>{
+                    const barColor=s.winRate>=60?'#22c55e':s.winRate>=45?'#f59e0b':'#ef4444';
+                    const confDot=s.confidence==='high'?'#22c55e':s.confidence==='medium'?'#f59e0b':'#94a3b8';
+                    return(
+                      <div key={i} className="flex items-center gap-2 text-xs">
+                        <span className="w-5 text-right font-bold text-gray-600">#{s.rank}</span>
+                        <span className="w-32 truncate font-semibold text-gray-300">{s.source}</span>
+                        <div className="flex-1 h-2 rounded-full overflow-hidden"style={{background:'#1e2d4a'}}>
+                          <div className="h-full rounded-full transition-all"style={{width:`${s.weight}%`,background:barColor}}/>
+                        </div>
+                        <span className="w-12 text-right font-bold"style={{color:barColor}}>{s.weight}%</span>
+                        <span className="w-16 text-right text-gray-500">{s.winRate}% W/R</span>
+                        <span className="w-12 text-right text-gray-600">{s.wins}W/{s.losses}L</span>
+                        <span className="w-2 h-2 rounded-full"style={{background:confDot}}
+                          title={`Confidence: ${s.confidence}`}/>
+                      </div>
+                    );
+                  })}
+                </div>
+                {sourceWeights.ranked.filter(s=>s.totalTrades===0).length>0&&(
+                  <div className="text-xs text-gray-600 mt-2">
+                    No data yet: {sourceWeights.ranked.filter(s=>s.totalTrades===0).map(s=>s.source).join(', ')}
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
 
         {/* ── what to do next ── */}
         <Card>
