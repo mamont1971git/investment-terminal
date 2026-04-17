@@ -525,6 +525,36 @@ module.exports = async (req, res) => {
       }
     }
 
+    // Route: fetch evaluation history for trend graph
+    if (parsed.action === 'eval_history') {
+      try {
+        const result = await notionQueryDB(EVAL_DB, undefined,
+          [{ property: 'Run Date', direction: 'ascending' }], TOKEN, 50);
+        const history = (result.results || []).map(page => {
+          const p = page.properties;
+          const grade = p['Grade']?.select?.name || '?';
+          const gradeNum = { 'A': 5, 'B': 4, 'C': 3, 'D': 2, 'F': 1 }[grade] || 0;
+          let appliedCount = 0;
+          try {
+            const recs = JSON.parse(p['Recommendations']?.rich_text?.[0]?.plain_text || '[]');
+            appliedCount = recs.length;
+          } catch {}
+          return {
+            date: p['Run Date']?.date?.start || page.created_time?.split('T')[0] || '',
+            grade,
+            gradeNum,
+            riskScore: p['Risk Score']?.number || 0,
+            tradesAnalyzed: p['Trades Analyzed']?.number || 0,
+            appliedCount,
+            status: p['Status']?.select?.name || 'Active',
+          };
+        });
+        return res.json({ history });
+      } catch (e) {
+        return res.status(500).json({ error: 'Failed to load eval history', detail: e.message });
+      }
+    }
+
     // Route: sync positions (existing)
     return handleSync(TOKEN, res);
   }
