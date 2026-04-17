@@ -5,6 +5,12 @@
 const https = require('https');
 let computeAll;
 try { computeAll = require('./_lib/indicators').computeAll; } catch { computeAll = null; }
+let computeSourceWeights, computePortfolioMetrics;
+try {
+  const sw = require('./_lib/signal-weights');
+  computeSourceWeights = sw.computeSourceWeights;
+  computePortfolioMetrics = sw.computePortfolioMetrics;
+} catch { computeSourceWeights = null; computePortfolioMetrics = null; }
 
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
@@ -514,11 +520,23 @@ module.exports = async (req, res) => {
       : 0,
   };
 
+  // Compute signal source weights from closed trade history
+  let sourceWeights = null;
+  let portfolioMetrics = null;
+  if (computeSourceWeights && closedTrades.length > 0) {
+    try { sourceWeights = computeSourceWeights(closedTrades); } catch {}
+  }
+  if (computePortfolioMetrics && closedTrades.length > 0) {
+    try { portfolioMetrics = computePortfolioMetrics(closedTrades); } catch {}
+  }
+
   res.json({
     positions,
     closedTrades,
     stats,
     wallet: walletSummary,
+    sourceWeights,
+    portfolioMetrics,
     pricesAvailable: Object.keys(prices).length > 0,
     ts: new Date().toISOString(),
   });

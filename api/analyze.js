@@ -9,6 +9,8 @@
 const https = require('https');
 const Anthropic = require('@anthropic-ai/sdk');
 const { computeAll } = require('./_lib/indicators');
+let computeSourceWeights;
+try { computeSourceWeights = require('./_lib/signal-weights').computeSourceWeights; } catch { computeSourceWeights = null; }
 
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
@@ -455,7 +457,7 @@ module.exports = async (req, res) => {
     (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
     fetchWorldMonitor(),
     NOTION_TOKEN ? fetchWalletState(NOTION_TOKEN) : Promise.resolve({ cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 }),
-    isDiscoverMode ? fetchFinvizSignals() : Promise.resolve(null),
+    (isDiscoverMode || mode === 'full') ? fetchFinvizSignals() : Promise.resolve(null),
   ]);
 
   const openFormatted = openTrades.map(formatTrade);
@@ -578,6 +580,18 @@ ${taContext}${wmContext}
 - Holdings: ${Object.entries(walletState.holdings).map(([t,h])=>`${t}(${h.shares.toFixed(4)}sh@$${(h.totalCost/h.shares).toFixed(2)})`).join(', ') || 'None'}
 ⚠️ WALLET CONSTRAINT: You may ONLY recommend BUY if the cost fits within available cash ($${walletState.cashBalance.toFixed(2)}). Position sizing must be in DOLLARS and SHARES based on this wallet, not percentages of a hypothetical portfolio. If cash is insufficient, recommend WATCHLIST instead of BUY.
 
+${(()=>{
+    if (!computeSourceWeights || !closedFormatted.length) return '';
+    try {
+      const sw = computeSourceWeights(closedFormatted);
+      if (!sw.ranked.length) return '';
+      return `📊 SIGNAL SOURCE RELIABILITY (Multiplicative Weights from ${sw.tradesAnalyzed} closed trades):
+${sw.ranked.filter(s=>s.totalTrades>0).map(s=>`  ${s.rank}. ${s.source}: ${s.weight}% weight | ${s.winRate}% win rate (${s.wins}W/${s.losses}L) | confidence: ${s.confidence}`).join('\n')}
+  Top: ${sw.topSource} | Weakest: ${sw.weakestSource}
+⚠️ Give MORE weight to higher-ranked sources in your analysis. Sources with "low" confidence have few data points — don't over-trust them yet.
+`;
+    } catch { return ''; }
+  })()}
 OPEN PAPER TRADES (${openFormatted.length}):
 ${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}`;
 
@@ -636,7 +650,12 @@ RULES:
 
 RECENT CLOSED TRADES (last ${closedFormatted.length}):
 ${closedFormatted.length ? closedFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | P&L: ${t.pnl!=null?(t.pnl>0?'+':'')+t.pnl.toFixed(1)+'%':'open'} | Score was: ${t.score||'?'} | Lesson: ${t.lesson||'none'}`).join('\n') : 'None yet'}
-
+${finvizSignals ? `
+📊 FINVIZ SCREENER SIGNALS (live unusual activity — use these to find NEW opportunities):
+${Object.entries(finvizSignals).map(([screen, tickers]) =>
+  `  ${screen}: ${tickers.length ? tickers.join(', ') : 'none'}`).join('\n')}
+NOTE: Stocks appearing in MULTIPLE screeners are stronger candidates. Cross-reference with TA data above.
+` : ''}
 USER COMMAND: ${command}
 
 Respond with a JSON object (no markdown, pure JSON):
