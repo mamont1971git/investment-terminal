@@ -332,7 +332,7 @@ CRITICAL RULES:
 - For "full analysis" or "run investment analysis": ONLY return BUY (score≥65) and WATCHLIST (score 50-64) in opportunities. Do NOT include SKIP entries — they waste space. Focus on actionable items only.
 - For "score" commands on a specific ticker: include the full verdict even if SKIP.
 - For "portfolio review": focus entirely on positions array with detailed actions. Opportunities array can be empty.
-- Every BUY must have entryPrice, stop (entry×0.93), tp1 (entry×1.08), tp2 (entry×1.15), positionPct.
+- Every BUY must have stop, tp1, tp2, positionPct. Do NOT include entryPrice — the system will fetch the live price automatically. If you don't know the current price, still recommend the trade; the system handles pricing.
 - Every position must have a specific recommendation and reasoning. Never say "monitor" — say exactly what to do.
 - Be specific with price levels and percentages. The user needs exact numbers to act on.
 - USE THE COMPUTED TECHNICAL INDICATORS above — they are calculated from real OHLCV data. Refer to specific RSI, MACD, Bollinger, Z-Score, Fibonacci, OBV, volume ratio values in your reasoning.
@@ -408,24 +408,21 @@ Scoring framework additions:
   if (NOTION_TOKEN && ALPHA_KEY && analysis.opportunities) {
     for (const opp of analysis.opportunities) {
       if (opp.action === 'BUY' && opp.score >= 65 && opp.ticker) {
-        // ALWAYS fetch live price to validate Claude's suggestion
-        let livePrice = null;
+        // ALWAYS fetch live price — never trust Claude's price suggestion
+        let price = null;
         try {
           const pr = await httpsGet(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${opp.ticker}&apikey=${ALPHA_KEY}`);
           const q = JSON.parse(pr.body)['Global Quote'];
-          livePrice = q?.['05. price'] ? parseFloat(q['05. price']) : null;
+          price = q?.['05. price'] ? parseFloat(q['05. price']) : null;
         } catch{}
 
-        // Use live price as entry; fall back to Claude's suggestion only if API fails
-        let price = livePrice || opp.entryPrice;
-
-        // Sanity check: if Claude's price differs >15% from live, flag it and use live
-        if (livePrice && opp.entryPrice && Math.abs(livePrice - opp.entryPrice) / livePrice > 0.15) {
-          opp.reasoning = `⚠️ PRICE CORRECTION: Claude suggested $${opp.entryPrice} but live price is $${livePrice.toFixed(2)} (${((livePrice-opp.entryPrice)/opp.entryPrice*100).toFixed(1)}% diff). Using live price. | ${opp.reasoning}`;
-          price = livePrice;
+        // No live price = skip this ticker entirely
+        if (!price) {
+          opp.reasoning = `⚠️ SKIPPED DRAFT: Could not fetch live price for ${opp.ticker}. Draft not created. | ${opp.reasoning}`;
+          continue;
         }
 
-        if (price) {
+        {
           const draft = await createDraft(
             opp.ticker, opp.strategy, opp.score,
             opp.reasoning, analysis.regime?.name,
