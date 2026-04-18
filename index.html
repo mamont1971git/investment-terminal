@@ -467,6 +467,82 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   const tp2Pct=t.entryPrice?((tp2-t.entryPrice)/t.entryPrice*100):null;
   const stopPct=t.entryPrice&&t.stopLoss?((t.stopLoss-t.entryPrice)/t.entryPrice*100):null;
 
+  // ── SMART VERDICT (computed once, used in header pill + action section) ──
+  const _price=t.currentPrice, _entry=t.entryPrice, _stop=t.stopLoss, _rec=t.recommendation;
+  const _toTp1=_price&&tp1?((tp1-_price)/_price*100):null;
+  const _toTp2=_price&&tp2?((tp2-_price)/_price*100):null;
+  const _toStop=_price&&_stop?((_price-_stop)/_price*100):null;
+  const _aboveEntry=_price&&_entry?((_price-_entry)/_entry*100):null;
+  const _hasEarnings=!!(t.right&&/earnings?/i.test(t.right));
+  let _earningsDays=null;
+  if(_hasEarnings){
+    const em=t.right&&t.right.match(/earnings?\s*(?:on|in|:)?\s*(\w+\s+\d+|\d+\s+days?)/i);
+    if(em){const dm=em[1].match(/(\d+)\s*days?/i);if(dm)_earningsDays=parseInt(dm[1]);
+    else{try{const ed=new Date(em[1]+' 2026');if(!isNaN(ed))_earningsDays=Math.max(0,Math.ceil((ed-new Date())/86400000));}catch(e){}}}
+  }
+  const _earningsWarn=_earningsDays!=null?` Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}.`:(_hasEarnings?' Earnings approaching.':'');
+
+  // Price sanity check — flag if P&L >80% on position held <30 days
+  const _daysHeld=t.daysHeld||0;
+  const _pnlSuspect=_aboveEntry!=null&&Math.abs(_aboveEntry)>80&&_daysHeld<30;
+
+  let verdict,verdictIcon,verdictColor,verdictBg,verdictBorder,verdictReason,primaryAction,primaryLabel;
+  if(_pnlSuspect){
+    verdict='PRICE ERROR';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+    verdictReason=`P&L of ${_aboveEntry>0?'+':''}${fmt(_aboveEntry,1)}% in ${_daysHeld}d looks wrong. Verify price data before acting.`;
+    primaryAction=null;primaryLabel='';
+  } else if(!_price||!_entry){
+    verdict='NO DATA';verdictIcon='⚠️';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
+    verdictReason='Waiting for price data';primaryAction=null;primaryLabel='';
+  } else if(_price<=_stop*1.005){
+    verdict='SELL NOW';verdictIcon='🚨';verdictColor='#ef4444';verdictBg='#1a0808';verdictBorder='#7f1d1d';
+    verdictReason='Stop loss hit. Close this position now.';
+    primaryAction='stopped_out';primaryLabel=`Close @ $${fmt(_stop)}`;
+  } else if(_price>=tp2*0.995){
+    verdict='SELL NOW — TARGET HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
+    verdictReason=`TP2 reached. You're up +${fmt(_aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money.${_earningsWarn}`;
+    primaryAction='take_profit_2';primaryLabel=`Take Profit +$${fmt(currentProfit,0)}`;
+  } else if(_price>=tp1*0.995){
+    verdict='SELL NOW — TARGET HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
+    verdictReason=`TP1 reached. You're up +${fmt(_aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money.${_earningsWarn}`;
+    primaryAction='take_profit_1';primaryLabel=`Take Profit +$${fmt(currentProfit,0)}`;
+  } else if(_rec==='EXIT_NOW'||_rec==='SELL'){
+    verdict='SELL NOW';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+    verdictReason=t.right?t.right.slice(0,120):'Exit signal triggered.';
+    primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(_price)}`;
+  } else if(_rec==='TAKE_PROFIT'){
+    if(_hasEarnings){
+      verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+      verdictReason=`Up +${fmt(_aboveEntry,1)}% but target not reached.${_earningsWarn} Decide before earnings.`;
+    } else {
+      verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+      verdictReason=`Up +${fmt(_aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Analysis suggests taking profit but target not hit. Watch for ${fmt(_toTp1,1)}% more to TP1.`;
+    }
+    primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(_price)} (+$${fmt(currentProfit,0)})`;
+  } else if(_toStop!=null&&_toStop<3){
+    verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+    verdictReason=`Only ${fmt(_toStop,1)}% above your stop. Be ready to exit.${_earningsWarn}`;
+    primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(_price)}`;
+  } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3){
+    verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+    verdictReason=_aboveEntry>=0
+      ?`Up +${fmt(_aboveEntry,1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Decide: lock in gains or hold through.`
+      :`Down ${fmt(Math.abs(_aboveEntry),1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Risk of further drop.`;
+    primaryAction=null;primaryLabel='';
+  } else if(_aboveEntry>=0){
+    verdict='DO NOTHING';verdictIcon='✅';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
+    verdictReason=_toTp1!=null?`Up +${fmt(_aboveEntry,1)}%. Target is ${fmt(_toTp1,1)}% away. Let it run.`:`Up +${fmt(_aboveEntry,1)}%. Let it run.`;
+    primaryAction=null;primaryLabel='';
+  } else {
+    verdict='DO NOTHING';verdictIcon='📊';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
+    verdictReason=_toStop!=null?`Down ${fmt(Math.abs(_aboveEntry),1)}% but ${fmt(_toStop,1)}% above stop. No action needed.`:`Down ${fmt(Math.abs(_aboveEntry),1)}%. No action needed.`;
+    primaryAction=null;primaryLabel='';
+  }
+
+  // Verdict pill color for header
+  const verdictPillColor=verdict.startsWith('SELL')?'#ef4444':verdict.startsWith('WATCH')?'#f59e0b':verdict==='DO NOTHING'?'#60a5fa':verdict==='PRICE ERROR'?'#f59e0b':'#94a3b8';
+  const verdictPillText=verdict.startsWith('SELL NOW')?'SELL':verdict==='WATCH CLOSELY'?'WATCH':verdict==='DO NOTHING'?'HOLD':verdict==='PRICE ERROR'?'⚠️ CHECK':'—';
+
   return(
     <div style={{borderTop:'1px solid #1e2d4a',background:'#0a0e1a'}}>
       {/* ═══════════ PRICE ALERT — critical warning ═══════════ */}
@@ -486,7 +562,7 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-black text-lg text-white">{t.ticker}</span>
             <span className="text-xs text-gray-500">{t.strategy}</span>
-            <Pill text={t.recommendation.replace(/_/g,' ')} color={recColor}/>
+            <Pill text={verdictPillText} color={verdictPillColor}/>
             {t.score&&<Pill text={`${t.score}/100`} color={t.score>=80?'#22c55e':t.score>=65?'#84cc16':'#f59e0b'}/>}
             {t.signalSources&&t.signalSources.length>0&&(
               <span className="flex gap-0.5 ml-1">
@@ -513,116 +589,32 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
       </div>
 
       {/* ═══════════ SMART ACTION — contextual verdict ═══════════ */}
-      {(()=>{
-        const price=t.currentPrice;
-        const entry=t.entryPrice;
-        const stop=t.stopLoss;
-        const rec=t.recommendation; // HOLD, EXIT_NOW, TAKE_PROFIT, etc.
+      <div className="px-4 py-3"style={{background:'#080c16'}}>
+        {/* ── VERDICT BANNER ── */}
+        <div className="rounded-xl px-4 py-3 mb-2"style={{background:verdictBg,border:`2px solid ${verdictBorder}`}}>
+          <div className="flex items-center gap-2 mb-1">
+            <span style={{fontSize:'18px'}}>{verdictIcon}</span>
+            <span className="font-black text-sm tracking-wide"style={{color:verdictColor}}>{verdict}</span>
+          </div>
+          <div className="text-xs leading-relaxed"style={{color:verdictColor+'cc'}}>{verdictReason}</div>
+        </div>
 
-        // ── compute distances as % from current price ──
-        const toTp1=price&&tp1?((tp1-price)/price*100):null;
-        const toTp2=price&&tp2?((tp2-price)/price*100):null;
-        const toStop=price&&stop?((price-stop)/price*100):null;
-        const aboveEntry=price&&entry?((price-entry)/entry*100):null;
+        {/* ── PRIMARY ACTION BUTTON (if urgent) ── */}
+        {primaryAction&&(
+          <button onClick={()=>handleClose(primaryAction,primaryLabel)}
+            disabled={!!closing}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-black transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-40 mb-2"
+            style={{background:verdictColor+'22',border:`2px solid ${verdictColor}`,color:verdictColor}}>
+            {closing===primaryAction?<><Spin/><span>Closing…</span></>:<>
+              <span>{verdictIcon}</span>
+              <span>{primaryLabel}</span>
+            </>}
+          </button>
+        )}
 
-        // ── determine primary verdict — direct, unambiguous ──
-        let verdict, verdictIcon, verdictColor, verdictBg, verdictBorder, verdictReason, primaryAction, primaryLabel;
-
-        // earnings detection — extract days until earnings from analysis notes
-        const earningsMatch=t.right&&t.right.match(/earnings?\s*(?:on|in|:)?\s*(\w+\s+\d+|\d+\s+days?)/i);
-        const hasEarningsConcern=!!(t.right&&/earnings?/i.test(t.right));
-        // try to extract days-to-earnings from notes like "earnings Apr 21" or "earnings in 3 days"
-        let earningsDays=null;
-        if(hasEarningsConcern&&earningsMatch){
-          const dMatch=earningsMatch[1].match(/(\d+)\s*days?/i);
-          if(dMatch) earningsDays=parseInt(dMatch[1]);
-          else {
-            // try parsing a date like "Apr 21"
-            try{const ed=new Date(earningsMatch[1]+' 2026');if(!isNaN(ed)){earningsDays=Math.max(0,Math.ceil((ed-new Date())/(86400000)));}}catch(e){}
-          }
-        }
-        const earningsWarn=earningsDays!=null?` Earnings in ${earningsDays} day${earningsDays!==1?'s':''}.`:(hasEarningsConcern?' Earnings approaching.':'');
-
-        if(!price||!entry){
-          verdict='NO DATA';verdictIcon='⚠️';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
-          verdictReason='Waiting for price data';
-          primaryAction=null;primaryLabel='';
-        } else if(price<=stop*1.005){
-          verdict='SELL NOW';verdictIcon='🚨';verdictColor='#ef4444';verdictBg='#1a0808';verdictBorder='#7f1d1d';
-          verdictReason=`Stop loss hit. Close this position now.`;
-          primaryAction='stopped_out';primaryLabel=`Close @ $${fmt(stop)}`;
-        } else if(price>=tp2*0.995){
-          verdict='SELL NOW — TARGET HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
-          verdictReason=`TP2 reached. You're up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money.${earningsWarn}`;
-          primaryAction='take_profit_2';primaryLabel=`Take Profit +$${fmt(currentProfit,0)}`;
-        } else if(price>=tp1*0.995){
-          verdict='SELL NOW — TARGET HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
-          verdictReason=`TP1 reached. You're up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money.${earningsWarn}`;
-          primaryAction='take_profit_1';primaryLabel=`Take Profit +$${fmt(currentProfit,0)}`;
-        } else if(rec==='EXIT_NOW'||rec==='SELL'){
-          verdict='SELL NOW';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-          verdictReason=t.right?t.right.slice(0,120):'Exit signal triggered.';
-          primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)}`;
-        } else if(rec==='TAKE_PROFIT'){
-          // Claude says take profit but target not hit — show as WATCH CLOSELY, not SELL
-          if(hasEarningsConcern){
-            verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-            verdictReason=`Up +${fmt(aboveEntry,1)}% but target not reached.${earningsWarn} Decide before earnings.`;
-            primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)} (+$${fmt(currentProfit,0)})`;
-          } else {
-            verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-            verdictReason=`Up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Analysis suggests taking profit but target not hit. Watch for ${fmt(toTp1,1)}% more to TP1.`;
-            primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)} (+$${fmt(currentProfit,0)})`;
-          }
-        } else if(toStop!=null&&toStop<3){
-          verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-          verdictReason=`Only ${fmt(toStop,1)}% above your stop. Be ready to exit.${earningsWarn}`;
-          primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(price)}`;
-        } else if(hasEarningsConcern&&earningsDays!=null&&earningsDays<=3){
-          // close to earnings, even if holding fine — flag it
-          verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-          verdictReason=aboveEntry>=0
-            ?`Up +${fmt(aboveEntry,1)}%. Earnings in ${earningsDays} day${earningsDays!==1?'s':''}. Decide: lock in gains or hold through.`
-            :`Down ${fmt(Math.abs(aboveEntry),1)}%. Earnings in ${earningsDays} day${earningsDays!==1?'s':''}. Risk of further drop.`;
-          primaryAction=null;primaryLabel='';
-        } else if(aboveEntry>=0){
-          verdict='DO NOTHING';verdictIcon='✅';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
-          verdictReason=toTp1!=null?`Up +${fmt(aboveEntry,1)}%. Target is ${fmt(toTp1,1)}% away. Let it run.`:`Up +${fmt(aboveEntry,1)}%. Let it run.`;
-          primaryAction=null;primaryLabel='';
-        } else {
-          verdict='DO NOTHING';verdictIcon='📊';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
-          verdictReason=toStop!=null?`Down ${fmt(Math.abs(aboveEntry),1)}% but ${fmt(toStop,1)}% above stop. No action needed.`:`Down ${fmt(Math.abs(aboveEntry),1)}%. No action needed.`;
-          primaryAction=null;primaryLabel='';
-        }
-
-        const isPrimaryUrgent=!!primaryAction;
-
-        return(
-          <div className="px-4 py-3"style={{background:'#080c16'}}>
-            {/* ── VERDICT BANNER ── */}
-            <div className="rounded-xl px-4 py-3 mb-2"style={{background:verdictBg,border:`2px solid ${verdictBorder}`}}>
-              <div className="flex items-center gap-2 mb-1">
-                <span style={{fontSize:'18px'}}>{verdictIcon}</span>
-                <span className="font-black text-sm tracking-wide"style={{color:verdictColor}}>{verdict}</span>
-              </div>
-              <div className="text-xs leading-relaxed"style={{color:verdictColor+'cc'}}>{verdictReason}</div>
-            </div>
-
-            {/* ── PRIMARY ACTION BUTTON (if urgent) ── */}
-            {primaryAction&&(
-              <button onClick={()=>handleClose(primaryAction,primaryLabel)}
-                disabled={!!closing}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-black transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-40 mb-2"
-                style={{background:verdictColor+'22',border:`2px solid ${verdictColor}`,color:verdictColor}}>
-                {closing===primaryAction?<><Spin/><span>Closing…</span></>:<>
-                  <span>{verdictIcon}</span>
-                  <span>{primaryLabel}</span>
-                  {currentProfit!=null&&<span className="text-xs opacity-80">({currentProfit>0?'+':''}${fmt(currentProfit,0)})</span>}
-                </>}
-              </button>
-            )}
-
-            {/* ── SECONDARY ACTIONS (collapsed by default) ── */}
+        {/* ── SECONDARY ACTIONS (collapsed by default) ── */}
+        {verdict!=='PRICE ERROR'&&(
+          <>
             <button onClick={()=>setShowAllActions(v=>!v)}
               className="w-full text-xs py-1 transition"style={{color:'#475569'}}>
               {showAllActions?'▲ Hide other actions':'▼ Other actions'}
@@ -657,7 +649,7 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
                     className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
                     style={{background:'#1a080888',border:'1px solid #ef444433',opacity:0.7}}>
                     {closing==='exit_now'?<Spin/>:<>
-                      <span style={{color:'#ef4444',fontSize:'11px'}}>Exit Now{price?` @ $${fmt(price)}`:''}</span>
+                      <span style={{color:'#ef4444',fontSize:'11px'}}>Exit Now{_price?` @ $${fmt(_price)}`:''}</span>
                       <span style={{color:currentProfit!=null&&currentProfit>0?'#4ade8088':'#f8717188',fontSize:'10px'}}>
                         {currentProfit!=null?`${currentProfit>0?'+':''}$${fmt(currentProfit,0)}`:'market'}
                       </span>
@@ -677,9 +669,9 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
                 )}
               </div>
             )}
-          </div>
-        );
-      })()}
+          </>
+        )}
+      </div>
 
       {/* ═══════════ DETAILS — collapsible info section ═══════════ */}
       <div className="px-4 py-2">

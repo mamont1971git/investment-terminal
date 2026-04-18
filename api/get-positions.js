@@ -623,10 +623,30 @@ module.exports = async (req, res) => {
     }
   }
 
+  // Price sanity check: if TA price is wildly off from entry (>80% move in <30d), re-fetch via quote API
+  const priceSanityCheck = {};
+  for (const t of openTrades) {
+    const taPrice = taData[t.ticker]?.price;
+    if (taPrice && t.entryPrice) {
+      const movePct = Math.abs((taPrice - t.entryPrice) / t.entryPrice * 100);
+      const daysHeld = t.dateOpened ? Math.floor((Date.now() - new Date(t.dateOpened).getTime()) / 86400000) : 0;
+      if (movePct > 80 && daysHeld < 30) {
+        // Suspect price — re-fetch from quote API
+        const quotePrice = await getPrice(t.ticker, ALPHA);
+        if (quotePrice && quotePrice > 0) {
+          priceSanityCheck[t.ticker] = { taPrice, quotePrice, used: 'quote' };
+          prices[t.ticker] = quotePrice; // override
+        }
+      }
+    }
+  }
+
   // Enrich open trades with live data + TA
   const positions = openTrades.map(t => {
     const ta = taData[t.ticker];
-    const currentPrice = ta?.price || prices[t.ticker] || null;
+    // Use quote price if TA price was flagged as suspect
+    const rawPrice = ta?.price || prices[t.ticker] || null;
+    const currentPrice = priceSanityCheck[t.ticker] ? (priceSanityCheck[t.ticker].quotePrice || rawPrice) : rawPrice;
     const livePnlPct = currentPrice && t.entryPrice
       ? +((currentPrice - t.entryPrice) / t.entryPrice * 100).toFixed(2)
       : null;
@@ -678,6 +698,8 @@ module.exports = async (req, res) => {
       urgency: !currentPrice ? 'urgent' : urgency,
       indicators,
       priceAlert,
+      _priceValidated: !!priceSanityCheck[t.ticker],
+      _priceSrc: priceSanityCheck[t.ticker] ? 'quote (TA price suspect)' : (ta?.price ? 'ohlcv' : 'quote'),
     };
   });
 
