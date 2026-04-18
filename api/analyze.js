@@ -628,18 +628,39 @@ module.exports = async (req, res) => {
 
     // Auto-create drafts for BUY opportunities
     const openTickerSet = new Set(openTickers.map(t => t.toUpperCase()));
+    // Fetch existing drafts to prevent duplicates across runs
+    let existingDraftTickers = new Set();
+    if (NOTION_TOKEN) {
+      try {
+        const draftData = JSON.stringify({filter:{and:[{property:'Status',select:{equals:'Draft'}},{property:'Simulation Mode',checkbox:{equals:true}}]},page_size:20});
+        const draftResult = await new Promise(resolve=>{
+          const req=https.request({hostname:'api.notion.com',path:`/v1/databases/${TRADE_DB}/query`,method:'POST',
+            headers:{'Authorization':'Bearer '+NOTION_TOKEN,'Content-Type':'application/json','Notion-Version':'2022-06-28','Content-Length':Buffer.byteLength(draftData)}
+          },res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}});});
+          req.on('error',()=>resolve({}));req.write(draftData);req.end();
+        });
+        for (const p of (draftResult.results||[])) {
+          const t = p.properties?.['Ticker']?.rich_text?.[0]?.plain_text;
+          if (t) existingDraftTickers.add(t.toUpperCase());
+        }
+      } catch{}
+    }
+    const draftedThisRun = new Set();
     const draftsCreated = [];
     const draftsSkipped = [];
     if (NOTION_TOKEN && ALPHA_KEY && analysis.opportunities) {
       for (const opp of analysis.opportunities) {
         if (opp.action === 'BUY' && opp.score >= 65 && opp.ticker) {
-          if (openTickerSet.has(opp.ticker.toUpperCase())) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Already held' }); continue; }
+          const tickerKey = opp.ticker.toUpperCase();
+          if (openTickerSet.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Already held' }); continue; }
+          if (existingDraftTickers.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Draft already exists' }); continue; }
+          if (draftedThisRun.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Duplicate in this run' }); continue; }
           let price = null;
           try { const pr = await httpsGet(`https://finnhub.io/api/v1/quote?symbol=${opp.ticker}&token=${ALPHA_KEY}`); const q = JSON.parse(pr.body); price = q && q.c && q.c > 0 ? q.c : null; } catch{}
           if (!price) { opp._priceAlert = `Price unavailable for ${opp.ticker}`; continue; }
           if ((opp.positionDollars || price) > walletState.cashBalance) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Insufficient funds' }); continue; }
           const draft = await createDraft(opp.ticker, opp.strategy, opp.score, opp.reasoning, analysis.regime?.name, opp.positionPct, price, NOTION_TOKEN, ALPHA_KEY, opp.signalAttribution);
-          if (draft.ok) draftsCreated.push(draft);
+          if (draft.ok) { draftsCreated.push(draft); draftedThisRun.add(tickerKey); }
         }
       }
     }
@@ -1431,19 +1452,40 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   }
 
   // Auto-create Order Drafts for BUY opportunities with score ≥ 65
-  // Skip tickers that already have open positions to prevent duplicates
+  // Skip tickers that already have open positions or existing drafts
   const openTickerSet = new Set(openFormatted.map(t => t.ticker.toUpperCase()).filter(Boolean));
+  // Fetch existing drafts to prevent duplicates
+  let existingDraftTickers = new Set();
+  if (NOTION_TOKEN) {
+    try {
+      const draftData = JSON.stringify({filter:{and:[{property:'Status',select:{equals:'Draft'}},{property:'Simulation Mode',checkbox:{equals:true}}]},page_size:20});
+      const draftResult = await new Promise(resolve=>{
+        const req=https.request({hostname:'api.notion.com',path:`/v1/databases/${TRADE_DB}/query`,method:'POST',
+          headers:{'Authorization':'Bearer '+NOTION_TOKEN,'Content-Type':'application/json','Notion-Version':'2022-06-28','Content-Length':Buffer.byteLength(draftData)}
+        },res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}});});
+        req.on('error',()=>resolve({}));req.write(draftData);req.end();
+      });
+      for (const p of (draftResult.results||[])) {
+        const t = p.properties?.['Ticker']?.rich_text?.[0]?.plain_text;
+        if (t) existingDraftTickers.add(t.toUpperCase());
+      }
+    } catch{}
+  }
+  const draftedThisRun = new Set();
   const draftsCreated = [];
   const draftsSkipped = [];
   if (NOTION_TOKEN && ALPHA_KEY && analysis.opportunities) {
     for (const opp of analysis.opportunities) {
       if (opp.action === 'BUY' && opp.score >= 65 && opp.ticker) {
+        const tickerKey = opp.ticker.toUpperCase();
         // Prevent duplicate positions
-        if (openTickerSet.has(opp.ticker.toUpperCase())) {
+        if (openTickerSet.has(tickerKey)) {
           draftsSkipped.push({ ticker: opp.ticker, reason: 'Already have an open position' });
           opp._skippedDraft = true;
           continue;
         }
+        if (existingDraftTickers.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Draft already exists' }); continue; }
+        if (draftedThisRun.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Duplicate in this run' }); continue; }
         // ALWAYS fetch live price — never trust Claude's price suggestion
         let price = null;
         try {
@@ -1478,7 +1520,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
             opp.positionPct, price, NOTION_TOKEN, ALPHA_KEY,
             opp.signalAttribution
           );
-          if (draft.ok) draftsCreated.push(draft);
+          if (draft.ok) { draftsCreated.push(draft); draftedThisRun.add(tickerKey); }
         }
       }
     }
