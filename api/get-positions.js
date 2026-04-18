@@ -623,30 +623,30 @@ module.exports = async (req, res) => {
     }
   }
 
-  // Price sanity check: if TA price is wildly off from entry (>80% move in <30d), re-fetch via quote API
-  const priceSanityCheck = {};
-  for (const t of openTrades) {
-    const taPrice = taData[t.ticker]?.price;
-    if (taPrice && t.entryPrice) {
-      const movePct = Math.abs((taPrice - t.entryPrice) / t.entryPrice * 100);
-      const daysHeld = t.dateOpened ? Math.floor((Date.now() - new Date(t.dateOpened).getTime()) / 86400000) : 0;
-      if (movePct > 80 && daysHeld < 30) {
-        // Suspect price — re-fetch from quote API
-        const quotePrice = await getPrice(t.ticker, ALPHA);
-        if (quotePrice && quotePrice > 0) {
-          priceSanityCheck[t.ticker] = { taPrice, quotePrice, used: 'quote' };
-          prices[t.ticker] = quotePrice; // override
-        }
-      }
-    }
+  // Always fetch real-time quote prices for ALL tickers to cross-validate OHLCV
+  const quotePrices = {};
+  for (const ticker of uniqueTickers) {
+    quotePrices[ticker] = await getPrice(ticker, ALPHA);
+    if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 150));
   }
 
   // Enrich open trades with live data + TA
   const positions = openTrades.map(t => {
     const ta = taData[t.ticker];
-    // Use quote price if TA price was flagged as suspect
-    const rawPrice = ta?.price || prices[t.ticker] || null;
-    const currentPrice = priceSanityCheck[t.ticker] ? (priceSanityCheck[t.ticker].quotePrice || rawPrice) : rawPrice;
+    const ohlcvPrice = ta?.price || null;
+    const quotePrice = quotePrices[t.ticker] || prices[t.ticker] || null;
+
+    // Price resolution: quote is real-time, OHLCV is last close
+    // If both exist and differ by >15%, trust quote (it's newer)
+    // If only one exists, use whichever we have
+    let currentPrice;
+    if (ohlcvPrice && quotePrice) {
+      const diff = Math.abs((ohlcvPrice - quotePrice) / quotePrice * 100);
+      currentPrice = diff > 15 ? quotePrice : quotePrice; // always prefer quote for current price
+    } else {
+      currentPrice = quotePrice || ohlcvPrice || null;
+    }
+
     const livePnlPct = currentPrice && t.entryPrice
       ? +((currentPrice - t.entryPrice) / t.entryPrice * 100).toFixed(2)
       : null;
@@ -698,8 +698,6 @@ module.exports = async (req, res) => {
       urgency: !currentPrice ? 'urgent' : urgency,
       indicators,
       priceAlert,
-      _priceValidated: !!priceSanityCheck[t.ticker],
-      _priceSrc: priceSanityCheck[t.ticker] ? 'quote (TA price suspect)' : (ta?.price ? 'ohlcv' : 'quote'),
     };
   });
 

@@ -482,11 +482,6 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   }
   const _earningsWarn=_earningsDays!=null?` Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}.`:(_hasEarnings?' Earnings approaching.':'');
 
-  // Price sanity — if backend flagged the price as suspect, note it but still give a verdict
-  const _daysHeld=t.daysHeld||0;
-  const _priceSuspect=t._priceValidated||(_aboveEntry!=null&&Math.abs(_aboveEntry)>80&&_daysHeld<30);
-  const _priceNote=_priceSuspect?' (price unverified — data may be stale)':'';
-
   let verdict,verdictIcon,verdictColor,verdictBg,verdictBorder,verdictReason,primaryAction,primaryLabel;
   if(!_price||!_entry){
     verdict='NO DATA';verdictIcon='⚠️';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
@@ -535,9 +530,6 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     verdictReason=_toStop!=null?`Down ${fmt(Math.abs(_aboveEntry),1)}% but ${fmt(_toStop,1)}% above stop. No action needed.`:`Down ${fmt(Math.abs(_aboveEntry),1)}%. No action needed.`;
     primaryAction=null;primaryLabel='';
   }
-
-  // Append price note if data is suspect
-  if(_priceSuspect&&verdictReason)verdictReason+=_priceNote;
 
   // Verdict pill color for header
   const verdictPillColor=verdict.startsWith('SELL')?'#ef4444':verdict.startsWith('WATCH')?'#f59e0b':verdict==='DO NOTHING'?'#60a5fa':'#94a3b8';
