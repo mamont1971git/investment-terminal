@@ -575,17 +575,42 @@ module.exports = async (req, res) => {
     // System prompts
     const quickSP = `You are Daniel's investment position monitor. Return only valid JSON, no markdown. Check each open position against its stop-loss and take-profit levels using the COMPUTED technical indicators provided. Be concise.`;
     const fullSP = `You are Daniel's investment analyst. Return only valid JSON, no markdown. Use COMPUTED technical indicators (RSI, MACD, Bollinger, ATR, OBV, Z-Score, Stochastic, Fibonacci, EMA) from real OHLCV data — never estimate when data is provided. Use LIVE World Monitor data (macro verdict, F&G composite, geopolitical theaters). Scoring bonuses: Z-Score<-2 +3pts, Z-Score>+2 -3pts, OBV divergence ±3pts, Stoch cross ±2pts, Fib support +2pts, Bollinger %B<0.05 +2pts. Cap positions at 5%. Prefer 2×ATR stops over fixed 7%.`;
+    const positionsSP = `You are Daniel's position monitor. Return only valid JSON, no markdown. For each open position, evaluate: distance to stop-loss, distance to TP1/TP2, days held (time stop at 10 days), and whether the regime has changed unfavorably. Use COMPUTED technical indicators. Be concise — 1-2 sentence reasoning per position.`;
+    const opportunitiesSP = `You are Daniel's opportunity scanner. Return only valid JSON, no markdown. Use COMPUTED technical indicators, LIVE World Monitor data, and Finviz screener signals to find NEW BUY candidates. Apply the full composite scoring framework rigorously. Scoring bonuses: Z-Score<-2 +3pts, Z-Score>+2 -3pts, OBV divergence ±3pts, Stoch cross ±2pts, Fib support +2pts, Bollinger %B<0.05 +2pts. Cap positions at 5%. Prefer 2×ATR stops over fixed 7%. Be selective — only recommend where multiple signals converge.`;
     const assessSP = `You are Daniel's personal investment analyst performing a DEEP single-ticker assessment. Return only valid JSON, no markdown. Use COMPUTED technical indicators and LIVE World Monitor intelligence. Scoring: Technical(0-40), Fundamental(0-30), Macro(0-20), Timing(0-10). Score<40=AVOID, >75=strong conviction.`;
     const discoverSP = `You are Daniel's investment discovery agent. Find underrated stocks using real screener data, technical indicators, and macro intelligence. Return only valid JSON, no markdown. Be selective — only recommend where multiple signals converge.`;
     const diagnoseSP = `You are an ADVERSARIAL performance reviewer for an algorithmic trading system. Return only valid JSON, no markdown. Find weaknesses, miscalibrations, and missed opportunities. Be brutally honest.`;
 
+    const splitRole = parsed.splitRole; // 'positions' or 'opportunities' or undefined
     const resolvedMode = parsed.mode || mode;
-    const sysPrompt = resolvedMode === 'diagnose' ? diagnoseSP : resolvedMode === 'discover' ? discoverSP : resolvedMode === 'assess' ? assessSP : (resolvedMode === 'quick' ? quickSP : fullSP);
+    let sysPrompt;
+    if (splitRole === 'positions') sysPrompt = positionsSP;
+    else if (splitRole === 'opportunities') sysPrompt = opportunitiesSP;
+    else sysPrompt = resolvedMode === 'diagnose' ? diagnoseSP : resolvedMode === 'discover' ? discoverSP : resolvedMode === 'assess' ? assessSP : (resolvedMode === 'quick' ? quickSP : fullSP);
+
+    // For split roles, append focused JSON schema instructions to the context
+    let finalContext = context;
+    if (splitRole === 'positions') {
+      finalContext += `\n\nYou are ONLY checking existing positions. Do NOT find new opportunities.
+Respond with JSON: {"regime":{"name":"...","headline":"...","why":"...","action":"...","vix":number,"fg":number_or_null,"spyAbove":boolean},
+"positions":[{"ticker":"XXXX","recommendation":"HOLD|TAKE_PROFIT|EXIT_NOW|TIGHTEN_STOP","currentPrice":null,"pnlPct":null,"reasoning":"1-2 sentences","urgency":"urgent|watch|ok",
+"signalAttribution":[{"source":"...","weight":number,"signal":"brief","verdict":"BULLISH|BEARISH|NEUTRAL"}]}],
+"stance":"Aggressive|Moderate|Defensive","nextCheckIn":"..."}
+RULES: Every position needs a recommendation. Cite specific indicator values. If near stop or TP1, flag urgency.`;
+    } else if (splitRole === 'opportunities') {
+      finalContext += `\n\nYou are ONLY finding NEW buy opportunities. Positions are handled separately.
+Already held (do NOT recommend): ${openTickers.join(', ') || 'none'}
+Respond with JSON: {"regime":{"name":"...","headline":"...","why":"...","action":"...","vix":number,"fg":number_or_null,"spyAbove":boolean},
+"opportunities":[{"ticker":"XXXX","score":number,"action":"BUY|WATCHLIST","strategy":"Mean Reversion|Breakout Momentum|Earnings Catalyst","reasoning":"2-3 sentences","stop":number,"tp1":number,"tp2":number,"positionPct":number,"positionDollars":number,"shares":number,"waitingFor":"only if WATCHLIST",
+"signalAttribution":[{"source":"...","weight":number,"signal":"brief","verdict":"BULLISH|BEARISH|NEUTRAL"}]}],
+"insights":"1 key observation","stance":"Aggressive|Moderate|Defensive","recommendedCash":"XX%"}
+RULES: BUY needs score≥65, WATCHLIST 50-64. Max 5 opportunities. Every BUY needs stop, tp1, tp2, positionDollars (max $${walletState.cashBalance.toFixed(2)}). Never recommend tickers already held.`;
+    }
 
     const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
     async function aiCall(runNum) {
       try {
-        const message = await client.messages.create({ model: modelId, max_tokens: maxTokens, system: sysPrompt, messages: [{ role: 'user', content: context }] });
+        const message = await client.messages.create({ model: modelId, max_tokens: maxTokens, system: sysPrompt, messages: [{ role: 'user', content: finalContext }] });
         const rawText = message.content[0].text;
         const stopReason = message.stop_reason; // 'end_turn' or 'max_tokens'
         const tokensUsed = message.usage?.output_tokens || 0;
@@ -660,7 +685,15 @@ module.exports = async (req, res) => {
       analysis.opportunities = Object.values(best);
     }
 
-    // Auto-create drafts for BUY opportunities
+    // Auto-create drafts for BUY opportunities (skip for positions-only split)
+    if (splitRole === 'positions') {
+      analysis.draftsCreated = [];
+      analysis.draftsSkipped = [];
+      analysis.priceAlerts = [];
+      analysis._splitRole = 'positions';
+      return res.json(analysis);
+    }
+    analysis._splitRole = splitRole || 'full';
     const openTickerSet = new Set(openTickers.map(t => t.toUpperCase()));
     // Fetch existing drafts to prevent duplicates across runs
     let existingDraftTickers = new Set();
