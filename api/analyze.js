@@ -21,7 +21,7 @@ const TUNING_DB = 'c326714ad2b748878e94c473760c97e3';
 // ── helpers ──────────────────────────────────────────────────────────────
 function httpsGet(url, headers={}) {
   return new Promise((resolve,reject) => {
-    https.get(url,{headers:{'User-Agent':'Mozilla/5.0',...headers},timeout:8000},res=>{
+    https.get(url,{headers:{'User-Agent':'Mozilla/5.0',...headers},timeout:5000},res=>{
       let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve({status:res.statusCode,body:d}));
     }).on('error',reject).on('timeout',function(){this.destroy();reject(new Error('timeout'));});
   });
@@ -36,20 +36,20 @@ async function fetchFinvizSignals() {
     oversoldBounce: 'v=111&f=cap_midover,ta_rsi_os30,ta_change_u1&ft=4&o=rsi',
   };
   const results = {};
-  for (const [name, params] of Object.entries(screens)) {
+  // Parallelize all 4 screener fetches instead of sequential
+  await Promise.all(Object.entries(screens).map(async ([name, params]) => {
     try {
       const r = await httpsGet(`https://finviz.com/screener.ashx?${params}`, {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Accept': 'text/html',
       });
-      // Extract tickers from HTML table — look for ticker links
       const tickerMatches = r.body.match(/screener-link-primary"[^>]*>([A-Z]{1,5})<\/a>/g) || [];
       results[name] = tickerMatches.slice(0, 8).map(m => {
         const t = m.match(/>([A-Z]{1,5})</);
         return t ? t[1] : null;
       }).filter(Boolean);
     } catch { results[name] = []; }
-  }
+  }));
   return results;
 }
 
@@ -192,7 +192,7 @@ async function fetchWorldMonitor() {
           headlines.push({ category: cat, title: item.title, source: item.source });
         }
       }
-      results.newsHeadlines = headlines.slice(0, 12); // cap at 12 headlines
+      results.newsHeadlines = headlines.slice(0, 8); // cap at 8 headlines
     } catch {}
 
     // 5. Earnings Calendar — next 2 weeks, filtered to relevant tickers
@@ -418,7 +418,7 @@ function fetchOHLCV(ticker, apiKey) {
     const to = Math.floor(Date.now() / 1000);
     const from = to - 120 * 86400; // ~120 days of daily candles
     const url = `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${apiKey}`;
-    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 }, res => {
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 6000 }, res => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
         try {
@@ -438,12 +438,17 @@ function fetchOHLCV(ticker, apiKey) {
 
 async function fetchTechnicalData(tickers, apiKey) {
   const results = {};
-  for (const ticker of tickers) { // no limit — Finnhub allows 60 calls/min
-    const bars = await fetchOHLCV(ticker, apiKey);
-    if (bars && bars.length >= 30) {
-      results[ticker] = computeAll(bars);
-    }
-    if (tickers.length > 1) await new Promise(r => setTimeout(r, 250));
+  // Batch parallel: 4 at a time (Finnhub allows 60/min)
+  const batchSize = 4;
+  for (let i = 0; i < tickers.length; i += batchSize) {
+    const batch = tickers.slice(i, i + batchSize);
+    await Promise.all(batch.map(async (ticker) => {
+      const bars = await fetchOHLCV(ticker, apiKey);
+      if (bars && bars.length >= 30) {
+        results[ticker] = computeAll(bars);
+      }
+    }));
+    if (i + batchSize < tickers.length) await new Promise(r => setTimeout(r, 200));
   }
   return results;
 }
@@ -607,7 +612,7 @@ module.exports = async (req, res) => {
   // In discover mode, fetch TA for top screener candidates
   if (finvizSignals) {
     const allScreenerTickers = [...new Set(Object.values(finvizSignals).flat())];
-    for (const t of allScreenerTickers.slice(0, 6)) { // limit to 6 to respect rate limits
+    for (const t of allScreenerTickers.slice(0, 4)) { // limit to 4 to stay within 60s timeout
       if (!taTickers.includes(t)) taTickers.push(t);
     }
   }
@@ -787,19 +792,7 @@ RULES:
 - If any position is near its stop-loss or TP1, flag urgency as "urgent" or "watch".`;
 
   // ── FULL MODE: Sonnet — deep analysis with attribution ─────────────────
-  const attributionRulesText = `- Every position and opportunity MUST include a "signalAttribution" array with ALL 7 core sources.
-- Each entry has: source (exact name from list), weight (0-100, all weights must sum to 100), signal (1 sentence what this source specifically says for THIS ticker), verdict (BULLISH/BEARISH/NEUTRAL/NO_DATA).
-- ALWAYS include ALL of these 7 sources for every ticker:
-  1. "Technical Analysis" — cite specific RSI, MACD, Z-Score, Bollinger, OBV values from computed data above
-  2. "CNN Fear & Greed" — current market sentiment from VIX/F&G. If VIX data available, use it as proxy
-  3. "Capitol Trades" — use the LIVE congressional trading data from Capitol Trades above. If a ticker appears in recent congressional trades, this is a strong signal. If the data says "unavailable", use verdict NO_DATA with weight 0
-  4. "Finviz Screener" — whether this ticker appears in oversold/breakout screeners based on its current technicals. Infer from the computed indicators whether it would show up
-  5. "Earnings Calendar" — use the UPCOMING EARNINGS data from World Monitor above. Flag if a ticker reports within 7 days (risk for mean reversion, catalyst for momentum). If not in calendar, say "No earnings in next 2 weeks"
-  6. "Sector Momentum" — how this ticker's sector is performing (tech, gold, healthcare, etc.)
-  7. "World Monitor" — MANDATORY. Use the World Monitor live intelligence above: macro signals verdict, geopolitical threat theaters, fear/greed composite breakdown, and news headlines. This is REAL LIVE DATA — cite specific values (e.g., macro verdict, theater names, F&G composite score).
-- Optionally add "Insider Activity" if relevant
-- Sources with NO_DATA get weight 0. Remaining weights must sum to 100.
-- The signal field should explain HOW this source affected the analysis — not just state a fact but connect it to the recommendation.`;
+  const attributionRulesText = `- Include "signalAttribution" array with 7 sources: "Technical Analysis", "CNN Fear & Greed", "Capitol Trades", "Finviz Screener", "Earnings Calendar", "Sector Momentum", "World Monitor". Each: {source, weight(0-100, sum=100), signal(1 sentence), verdict(BULLISH/BEARISH/NEUTRAL/NO_DATA)}. NO_DATA sources get weight 0.`;
 
   const fullContext = `${marketHeader}
 
@@ -1121,23 +1114,7 @@ ADDITIONAL RULES:
   const quickSystemPrompt = `You are Daniel's investment position monitor. Return only valid JSON, no markdown.
 Check each open position against its stop-loss and take-profit levels using the COMPUTED technical indicators provided. Be concise.`;
 
-  const fullSystemPrompt = `You are Daniel's personal investment analyst. Apply the composite scoring framework rigorously. Return only valid JSON, no markdown.
-
-You have access to COMPUTED technical indicators (RSI, MACD, Bollinger Bands, ATR, OBV, Z-Score, Stochastic, Williams %R, CCI, Fibonacci retracement, SMA/EMA alignment) calculated from real OHLCV price data. ALWAYS reference these computed values in your analysis — do not estimate or guess indicator values when real data is provided.
-
-You also have LIVE World Monitor intelligence: macro signals with a machine-generated BUY/SELL/HOLD verdict, a composite Fear & Greed index with VIX/put-call/breadth inputs, active geopolitical threat theaters, and live news headlines. This is REAL-TIME data — incorporate it into every analysis. World Monitor is a MANDATORY signal source for attribution.
-
-Scoring framework additions:
-- Z-Score < -2: +3pts to Technical Setup (statistically extreme oversold)
-- Z-Score > +2: -3pts (overbought warning)
-- OBV bullish divergence (price down, volume accumulating): +3pts
-- OBV bearish divergence (price up, volume dropping): -3pts
-- Stochastic bullish cross in oversold zone: +2pts
-- Stochastic bearish cross in overbought zone: -2pts
-- Fibonacci: if price is at 0.618 or 0.786 retracement support: +2pts
-- Bollinger %B < 0.05 (at lower band): +2pts for mean reversion
-- 1% Rule: if computed position size exceeds 5% of portfolio, cap at 5%
-- ATR-based stops: prefer 2×ATR stop over fixed 7% when ATR data available`;
+  const fullSystemPrompt = `You are Daniel's investment analyst. Return only valid JSON, no markdown. Use COMPUTED technical indicators (RSI, MACD, Bollinger, ATR, OBV, Z-Score, Stochastic, Fibonacci, EMA) from real OHLCV data — never estimate when data is provided. Use LIVE World Monitor data (macro verdict, F&G composite, geopolitical theaters). Scoring bonuses: Z-Score<-2 +3pts, Z-Score>+2 -3pts, OBV divergence ±3pts, Stoch cross ±2pts, Fib support +2pts, Bollinger %B<0.05 +2pts. Cap positions at 5%. Prefer 2×ATR stops over fixed 7%.`;
 
   // Assessment mode system prompt
   const assessSystemPrompt = `You are Daniel's personal investment analyst performing a DEEP single-ticker assessment. Apply the composite scoring framework rigorously. Return only valid JSON, no markdown.
@@ -1176,7 +1153,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments + discovery + diagnose
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
   const modelId = (isQuick && !isAssessMode && !isDiscoverMode && !isDiagnoseMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
-  const maxTokens = isQuick ? 2048 : 8192;
+  const maxTokens = isQuick ? 2048 : 4096;
   const systemPrompt = isDiagnoseMode ? diagnoseSystemPrompt : (isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt)));
 
   // Run Claude call(s) — single for normal, PARALLEL for consistency mode
