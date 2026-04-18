@@ -526,19 +526,61 @@ module.exports = async (req, res) => {
     }
 
     // Route: fetch evaluation history for trend graph
-    // Route: purge all open positions (archive them in Notion)
+    // Route: purge simulation positions only (archive + return cash to wallet)
     if (parsed.action === 'purge_positions') {
       try {
+        // ONLY purge simulation/paper trades — never real holdings
         const openResult = await notionQueryDB(TRADE_DB,
-          { or: [
-            { property: 'Status', select: { equals: 'Open' } },
-            { property: 'Status', select: { equals: 'Paper' } },
-            { property: 'Status', select: { equals: 'Draft' } },
+          { and: [
+            { property: 'Simulation Mode', checkbox: { equals: true } },
+            { or: [
+              { property: 'Status', select: { equals: 'Paper' } },
+              { property: 'Status', select: { equals: 'Draft' } },
+            ]},
           ]},
           undefined, TOKEN, 50
         );
+
+        // Get current wallet state for balance tracking
+        const walletResult = await notionQueryDB(WALLET_DB, undefined,
+          [{ property: 'Date', direction: 'ascending' }], TOKEN, 200);
+        const walletTxs = (walletResult.results || []).map(formatWalletTx);
+        let runningBalance = computeWalletState(walletTxs).cashBalance;
+
         let archived = 0;
+        const today = new Date().toISOString().split('T')[0];
+
         for (const page of (openResult.results || [])) {
+          const p = page.properties;
+          const ticker = p['Ticker']?.rich_text?.[0]?.plain_text || '';
+          const entryPrice = p['Entry Price']?.number || 0;
+          const positionPct = p['Position Size %']?.number || 0;
+          const status = p['Status']?.select?.name || '';
+
+          // Only create SELL wallet tx for positions that had a BUY (Paper, not Draft)
+          if (status === 'Paper' && ticker && entryPrice > 0) {
+            // Get wallet holdings to find shares for this ticker
+            const holdingState = computeWalletState(walletTxs);
+            const holding = holdingState.holdings[ticker];
+            const shares = holding ? holding.shares : 0;
+            const sellAmount = +(shares * entryPrice).toFixed(2); // return at entry price (paper trade)
+
+            if (shares > 0 && sellAmount > 0) {
+              runningBalance = +(runningBalance + sellAmount).toFixed(2);
+              await createWalletTx({
+                transaction: `PURGE SELL ${ticker}`,
+                type: 'SELL',
+                ticker,
+                shares,
+                price: entryPrice,
+                amount: sellAmount,
+                date: today,
+                tradeLink: page.id,
+              }, runningBalance, TOKEN);
+            }
+          }
+
+          // Archive the trade page
           const body = JSON.stringify({ archived: true });
           await new Promise(resolve => {
             const req = https.request({
@@ -550,7 +592,7 @@ module.exports = async (req, res) => {
           });
           archived++;
         }
-        return res.json({ ok: true, archived });
+        return res.json({ ok: true, archived, balanceAfter: runningBalance });
       } catch (e) {
         return res.status(500).json({ error: 'Purge failed', detail: e.message });
       }
