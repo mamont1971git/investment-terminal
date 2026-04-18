@@ -1061,7 +1061,7 @@ function TickerAssess(){
   );
 }
 
-function AnalysisPanel(){
+function AnalysisPanel({onPositionsUpdate}){
   const [loading,setLoading]=useState(false);
   const [result,setResult]=useState(null);
   const [error,setError]=useState(null);
@@ -1086,8 +1086,8 @@ function AnalysisPanel(){
         if(d.error)throw new Error(d.error);
         setResult(d);
         // Merge quick check into position cards too
-        if(d.positions&&d.positions.length>0){
-          setPositions(prev=>prev.map(p=>{
+        if(d.positions&&d.positions.length>0&&onPositionsUpdate){
+          onPositionsUpdate(prev=>prev.map(p=>{
             const ai=d.positions.find(ap=>ap.ticker===p.ticker);
             if(!ai)return p;
             return{...p,
@@ -1146,8 +1146,8 @@ function AnalysisPanel(){
         };
         setResult(merged);
         // Merge analysis recommendations into position cards — single source of truth
-        if(merged.positions&&merged.positions.length>0){
-          setPositions(prev=>prev.map(p=>{
+        if(merged.positions&&merged.positions.length>0&&onPositionsUpdate){
+          onPositionsUpdate(prev=>prev.map(p=>{
             const ai=merged.positions.find(ap=>ap.ticker===p.ticker);
             if(!ai)return p;
             return{...p,
@@ -1184,8 +1184,8 @@ function AnalysisPanel(){
         }
         setResult(d);
         // Merge analysis recommendations into position cards
-        if(d.positions&&d.positions.length>0){
-          setPositions(prev=>prev.map(p=>{
+        if(d.positions&&d.positions.length>0&&onPositionsUpdate){
+          onPositionsUpdate(prev=>prev.map(p=>{
             const ai=d.positions.find(ap=>ap.ticker===p.ticker);
             if(!ai)return p;
             return{...p,
@@ -2105,7 +2105,7 @@ function DailyBrief(){
         )}
 
         {/* ── AI analysis — runs Claude directly ── */}
-        <AnalysisPanel/>
+        <AnalysisPanel onPositionsUpdate={setPositions}/>
 
         {/* ── ticker assessment ── */}
         <TickerAssess/>
