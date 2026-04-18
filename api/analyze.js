@@ -1179,9 +1179,8 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   const maxTokens = isQuick ? 2048 : 8192;
   const systemPrompt = isDiagnoseMode ? diagnoseSystemPrompt : (isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt)));
 
-  // Run Claude call(s) — single for normal, N times for consistency mode
-  const allRuns = [];
-  for (let run = 0; run < consistencyN; run++) {
+  // Run Claude call(s) — single for normal, PARALLEL for consistency mode
+  async function singleClaudeCall(runNum) {
     try {
       const message = await client.messages.create({
         model: modelId,
@@ -1192,14 +1191,17 @@ Be constructive but unflinching. Every recommendation must be specific and imple
       const rawText = message.content[0].text;
       const clean = rawText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
       try {
-        allRuns.push({ parsed: JSON.parse(clean), raw: rawText, run: run + 1 });
+        return { parsed: JSON.parse(clean), raw: rawText, run: runNum };
       } catch(pe) {
-        allRuns.push({ parsed: null, raw: rawText, run: run + 1, parseError: pe.message });
+        return { parsed: null, raw: rawText, run: runNum, parseError: pe.message };
       }
     } catch(e) {
-      allRuns.push({ parsed: null, raw: null, run: run + 1, error: e.message });
+      return { parsed: null, raw: null, run: runNum, error: e.message };
     }
   }
+  const allRuns = await Promise.all(
+    Array.from({ length: consistencyN }, (_, i) => singleClaudeCall(i + 1))
+  );
 
   // If all runs failed, return error
   const successfulRuns = allRuns.filter(r => r.parsed);
