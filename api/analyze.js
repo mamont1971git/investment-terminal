@@ -542,6 +542,7 @@ module.exports = async (req, res) => {
   let body=''; req.on('data',c=>body+=c);
   await new Promise(r=>req.on('end',r));
   const parsed = JSON.parse(body||'{}');
+  const phase = parsed.phase || 'all'; // 'data' = fetch only, 'ai' = Claude only, 'all' = legacy single-call
   const command = parsed.command || 'run investment analysis';
   const mode = parsed.mode || 'full'; // 'quick' = Haiku (cheap), 'full' = Sonnet (deep + attribution)
 
@@ -559,6 +560,72 @@ module.exports = async (req, res) => {
   const isDiagnoseMode = mode === 'diagnose' || mode === 'consistency' || /evaluate.*performance|diagnose|run.*diagnostics/i.test(command);
   const isConsistencyMode = mode === 'consistency';
   const consistencyN = isConsistencyMode ? Math.min(Math.max(parseInt(parsed.n) || 3, 2), 7) : 1;
+
+  // ── PHASE: AI — skip all data fetching, use pre-fetched context ───────
+  if (phase === 'ai' && parsed.context) {
+    const context = parsed.context;
+    const modelId = parsed.modelId || 'claude-sonnet-4-6';
+    const maxTokens = parsed.maxTokens || 4096;
+    const openFormatted = parsed.openFormatted || [];
+    const walletState = parsed.walletState || { cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 };
+    const openTickers = parsed.openTickers || [];
+    const consistencyNAi = parsed.consistencyN || 1;
+
+    // System prompts
+    const quickSP = `You are Daniel's investment position monitor. Return only valid JSON, no markdown. Check each open position against its stop-loss and take-profit levels using the COMPUTED technical indicators provided. Be concise.`;
+    const fullSP = `You are Daniel's investment analyst. Return only valid JSON, no markdown. Use COMPUTED technical indicators (RSI, MACD, Bollinger, ATR, OBV, Z-Score, Stochastic, Fibonacci, EMA) from real OHLCV data — never estimate when data is provided. Use LIVE World Monitor data (macro verdict, F&G composite, geopolitical theaters). Scoring bonuses: Z-Score<-2 +3pts, Z-Score>+2 -3pts, OBV divergence ±3pts, Stoch cross ±2pts, Fib support +2pts, Bollinger %B<0.05 +2pts. Cap positions at 5%. Prefer 2×ATR stops over fixed 7%.`;
+    const assessSP = `You are Daniel's personal investment analyst performing a DEEP single-ticker assessment. Return only valid JSON, no markdown. Use COMPUTED technical indicators and LIVE World Monitor intelligence. Scoring: Technical(0-40), Fundamental(0-30), Macro(0-20), Timing(0-10). Score<40=AVOID, >75=strong conviction.`;
+    const discoverSP = `You are Daniel's investment discovery agent. Find underrated stocks using real screener data, technical indicators, and macro intelligence. Return only valid JSON, no markdown. Be selective — only recommend where multiple signals converge.`;
+    const diagnoseSP = `You are an ADVERSARIAL performance reviewer for an algorithmic trading system. Return only valid JSON, no markdown. Find weaknesses, miscalibrations, and missed opportunities. Be brutally honest.`;
+
+    const resolvedMode = parsed.mode || mode;
+    const sysPrompt = resolvedMode === 'diagnose' ? diagnoseSP : resolvedMode === 'discover' ? discoverSP : resolvedMode === 'assess' ? assessSP : modelId.includes('haiku') ? quickSP : fullSP;
+
+    const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+    async function aiCall(runNum) {
+      try {
+        const message = await client.messages.create({ model: modelId, max_tokens: maxTokens, system: sysPrompt, messages: [{ role: 'user', content: context }] });
+        const rawText = message.content[0].text;
+        const clean = rawText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+        try { return { parsed: JSON.parse(clean), raw: rawText, run: runNum }; }
+        catch(pe) { return { parsed: null, raw: rawText, run: runNum, parseError: pe.message }; }
+      } catch(e) { return { parsed: null, raw: null, run: runNum, error: e.message }; }
+    }
+    const allRuns = await Promise.all(Array.from({ length: consistencyNAi }, (_, i) => aiCall(i + 1)));
+    const successfulRuns = allRuns.filter(r => r.parsed);
+    if (successfulRuns.length === 0) {
+      return res.status(500).json({ error: 'Claude call failed', runs: allRuns.map(r => r.error || r.parseError) });
+    }
+    let analysis = successfulRuns[0].parsed;
+    analysis._phase = 'ai';
+    analysis._mode = resolvedMode;
+    analysis._model = modelId;
+    analysis._assessTicker = parsed.assessTicker || null;
+    analysis._worldMonitor = parsed._worldMonitor || {};
+    analysis.wallet = walletState;
+
+    // Auto-create drafts for BUY opportunities
+    const openTickerSet = new Set(openTickers.map(t => t.toUpperCase()));
+    const draftsCreated = [];
+    const draftsSkipped = [];
+    if (NOTION_TOKEN && ALPHA_KEY && analysis.opportunities) {
+      for (const opp of analysis.opportunities) {
+        if (opp.action === 'BUY' && opp.score >= 65 && opp.ticker) {
+          if (openTickerSet.has(opp.ticker.toUpperCase())) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Already held' }); continue; }
+          let price = null;
+          try { const pr = await httpsGet(`https://finnhub.io/api/v1/quote?symbol=${opp.ticker}&token=${ALPHA_KEY}`); const q = JSON.parse(pr.body); price = q && q.c && q.c > 0 ? q.c : null; } catch{}
+          if (!price) { opp._priceAlert = `Price unavailable for ${opp.ticker}`; continue; }
+          if ((opp.positionDollars || price) > walletState.cashBalance) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Insufficient funds' }); continue; }
+          const draft = await createDraft(opp.ticker, opp.strategy, opp.score, opp.reasoning, analysis.regime?.name, opp.positionPct, price, NOTION_TOKEN, ALPHA_KEY, opp.signalAttribution);
+          if (draft.ok) draftsCreated.push(draft);
+        }
+      }
+    }
+    analysis.draftsCreated = draftsCreated;
+    analysis.draftsSkipped = draftsSkipped;
+    analysis.priceAlerts = (analysis.opportunities || []).filter(o => o._priceAlert).map(o => ({ ticker: o.ticker, alert: o._priceAlert }));
+    return res.json(analysis);
+  }
 
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick' && !isAssessMode;
@@ -1109,6 +1176,29 @@ ADDITIONAL RULES:
 
   const context = isDiagnoseMode ? diagnoseContext : (isDiscoverMode ? discoverContext : (isAssessMode ? assessContext : (isQuick ? quickContext : fullContext)));
 
+  // ── PHASE: DATA — return context + metadata, skip Claude call ────────
+  if (phase === 'data') {
+    return res.json({
+      _phase: 'data',
+      context,
+      mode: isDiagnoseMode ? 'diagnose' : (isDiscoverMode ? 'discover' : (isAssessMode ? 'assess' : mode)),
+      modelId: (isQuick && !isAssessMode && !isDiscoverMode && !isDiagnoseMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
+      maxTokens: isQuick ? 2048 : 4096,
+      assessTicker: assessTicker || null,
+      consistencyN,
+      openTickers: openFormatted.map(t => t.ticker).filter(Boolean),
+      openFormatted,
+      walletState,
+      _worldMonitor: {
+        macroVerdict: wm.macroSignals?.verdict || null,
+        fearGreed: wm.fearGreed ? `${wm.fearGreed.compositeScore} (${wm.fearGreed.compositeLabel})` : null,
+        geoTheaters: wm.geopolitical?.theaters?.map(t => t.label) || [],
+      },
+    });
+  }
+
+  // ── PHASE: AI — receive pre-fetched context, call Claude only ────────
+  // (phase === 'all' falls through to here and uses locally-built context)
 
   // System prompts — quick mode is lightweight, full mode has scoring framework
   const quickSystemPrompt = `You are Daniel's investment position monitor. Return only valid JSON, no markdown.

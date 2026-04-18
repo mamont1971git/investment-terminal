@@ -869,11 +869,18 @@ function TickerAssess(){
     if(!t)return;
     setLoading(true);setError(null);setResult(null);
     try{
-      const r=await fetch('/api/analyze',{
+      // Two-phase: data fetch → AI analysis
+      const r1=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ticker:t,thesis:thesis.trim()||undefined,command:`score ${t}`,mode:'full'}),
+        body:JSON.stringify({ticker:t,thesis:thesis.trim()||undefined,command:`score ${t}`,mode:'full',phase:'data'}),
       });
-      const d=await r.json();
+      const dataResult=await r1.json();
+      if(dataResult.error){setError(dataResult.error);return;}
+      const r2=await fetch('/api/analyze',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({phase:'ai',...dataResult,command:`score ${t}`}),
+      });
+      const d=await r2.json();
       if(d.error){setError(d.error);return;}
       setResult(d);
     }catch(e){setError(e.message);}
@@ -1019,13 +1026,32 @@ function AnalysisPanel(){
     }
     setLoading(true);setResult(null);setError(null);setCommand(cmd);
     try{
-      const r=await fetch('/api/analyze',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({command:cmd,mode}),
-      });
-      const d=await r.json();
-      if(d.error)throw new Error(d.error);
-      setResult(d);
+      if(mode==='quick'){
+        // Quick mode: single call (Haiku is fast enough)
+        const r=await fetch('/api/analyze',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({command:cmd,mode}),
+        });
+        const d=await r.json();
+        if(d.error)throw new Error(d.error);
+        setResult(d);
+      }else{
+        // Two-phase: data fetch → AI analysis (each gets 60s)
+        const r1=await fetch('/api/analyze',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({command:cmd,mode,phase:'data'}),
+        });
+        const dataResult=await r1.json();
+        if(dataResult.error)throw new Error(dataResult.error);
+        // Phase 2: send context to Claude
+        const r2=await fetch('/api/analyze',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({phase:'ai',...dataResult,command:cmd}),
+        });
+        const d=await r2.json();
+        if(d.error)throw new Error(d.error);
+        setResult(d);
+      }
     }catch(e){setError(e.message);}
     finally{setLoading(false);}
   };
@@ -1613,11 +1639,18 @@ function DailyBrief(){
     if(window.location.protocol==='file:')return;
     setEvalStatus('loading');setEvalResults(null);setApprovals({});setApplyStatus('idle');
     try{
-      const r=await fetch('/api/analyze',{
+      // Two-phase: data fetch → AI diagnosis
+      const r1=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({mode:'diagnose',command:'evaluate performance'})
+        body:JSON.stringify({mode:'diagnose',command:'evaluate performance',phase:'data'})
       });
-      const d=await r.json();
+      const dataResult=await r1.json();
+      if(dataResult.error){setEvalStatus('error');return;}
+      const r2=await fetch('/api/analyze',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance'})
+      });
+      const d=await r2.json();
       if(d.parseError){setEvalStatus('error');return;}
 
       // Quality gate: filter recs with qualityScore >= 6 and not deferred
@@ -1695,9 +1728,16 @@ function DailyBrief(){
       const progInterval=setInterval(()=>{
         setConsistencyProgress(p=>Math.min(p+1,consistencyN*100-1));
       },300);
+      // Two-phase: data fetch → AI consistency runs
+      const r1=await fetch('/api/analyze',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({mode:'consistency',command:'evaluate performance',n:consistencyN,phase:'data'})
+      });
+      const dataResult=await r1.json();
+      if(dataResult.error){clearInterval(progInterval);setConsistencyStatus('done');setConsistencyReport({error:dataResult.error});return;}
       const r=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({mode:'consistency',command:'evaluate performance',n:consistencyN})
+        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance'})
       });
       clearInterval(progInterval);
       const d=await r.json();
