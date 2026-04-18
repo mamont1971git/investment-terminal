@@ -1031,10 +1031,14 @@ function AnalysisPanel(){
   };
 
   const cmds=[
-    {id:'run investment analysis',label:'🤖 Full Analysis',color:'#6366f1',desc:'Deep scan + attribution (Sonnet)',mode:'full'},
-    {id:'portfolio review',label:'📈 Portfolio Review',color:'#22c55e',desc:'Position status (Sonnet)',mode:'full'},
-    {id:'discover hidden gems',label:'🔍 Discover',color:'#a855f7',desc:'Find underrated stocks (Sonnet + Finviz)',mode:'discover'},
-    {id:'live market pulse',label:'⚡ Quick Check',color:'#f59e0b',desc:'Regime + positions (Haiku)',mode:'quick'},
+    {id:'run investment analysis',label:'🤖 Full Analysis',color:'#6366f1',desc:'Deep scan + attribution (Sonnet)',mode:'full',
+      tip:'Runs Claude Sonnet to scan all positions, score BUY candidates, attribute signal sources, and auto-create drafts for high-scoring opportunities'},
+    {id:'portfolio review',label:'📈 Portfolio Review',color:'#22c55e',desc:'Position status (Sonnet)',mode:'full',
+      tip:'Reviews every open position with Claude Sonnet — checks P&L, stop proximity, TP targets, and gives a HOLD/SELL/EXIT recommendation for each'},
+    {id:'discover hidden gems',label:'🔍 Discover',color:'#a855f7',desc:'Find underrated stocks (Sonnet + Finviz)',mode:'discover',
+      tip:'Searches Finviz screeners + technical data for overlooked stocks with converging signals — oversold bounces, unusual volume, macro alignment'},
+    {id:'live market pulse',label:'⚡ Quick Check',color:'#f59e0b',desc:'Regime + positions (Haiku)',mode:'quick',
+      tip:'Fast check using Claude Haiku — market regime (risk-on/off), VIX/F&G levels, and a quick recommendation for each open position'},
   ];
 
   const regimeColor=n=>!n?'#94a3b8':n.includes('CAUTION')||n.includes('FEAR')?'#ef4444':n.includes('BREAKOUT')?'#22c55e':'#6366f1';
@@ -1049,6 +1053,7 @@ function AnalysisPanel(){
         <div className="flex gap-2 flex-wrap">
           {cmds.map(c=>(
             <button key={c.id} onClick={()=>run(c.id,c.mode||'full')} disabled={loading}
+              title={c.tip}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all"
               style={{
                 background:loading&&command===c.id?c.color+'40':c.color+'18',
@@ -1962,18 +1967,19 @@ function DailyBrief(){
                   }catch(err){btn.style.animation='';btn.style.background='#ef444430';btn.textContent='❌ '+err.message;}
                   finally{btn.disabled=false; setTimeout(()=>{btn.textContent='🔄 Sync';btn.style.background=origBg;},4000);}
                 }}
-                  title="Normalize all trades to current schema (title format, status, TP/SL levels)"
+                  title="Re-applies naming conventions, recalculates TP/Stop targets, and fixes status labels for all trades in Notion"
                   className="px-2 py-0.5 rounded-lg text-xs font-semibold transition-all hover:scale-105"
                   style={{background:'#6366f118',color:'#a78bfa',border:'1px solid #6366f133'}}>
                   🔄 Sync
                 </button>
                 <button onClick={fetchPositions}
+                  title="Reload all positions and wallet data from Notion + fetch latest prices from Finnhub"
                   className="px-2 py-0.5 rounded-lg text-xs font-semibold transition-all hover:scale-105"
                   style={{background:'#3b82f618',color:'#60a5fa',border:'1px solid #3b82f633'}}>
                   ↻ Refresh
                 </button>
                 <button onClick={async(e)=>{
-                  if(!confirm('Delete ALL open positions and drafts? This cannot be undone.'))return;
+                  if(!confirm('Delete ALL open positions and drafts from Notion? This cannot be undone.'))return;
                   const btn=e.currentTarget;btn.disabled=true;btn.textContent='🗑️ Deleting…';
                   try{
                     const r=await fetch('/api/get-positions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'purge_positions'})});
@@ -1983,6 +1989,7 @@ function DailyBrief(){
                   }catch(err){btn.textContent='❌ '+err.message;}
                   finally{setTimeout(()=>{btn.textContent='🗑️ Purge';btn.disabled=false;},3000);}
                 }}
+                  title="Permanently deletes all open positions and pending drafts from Notion — use when data is corrupt or you want a clean slate"
                   className="px-2 py-0.5 rounded-lg text-xs font-semibold transition-all hover:scale-105"
                   style={{background:'#ef444418',color:'#f87171',border:'1px solid #ef444433'}}>
                   🗑️ Purge
@@ -2077,6 +2084,7 @@ function DailyBrief(){
             <div className="flex items-center gap-2">
               {/* Evaluate + Auto-heal button */}
               <button onClick={runEvaluation} disabled={evalStatus==='loading'}
+                title="Runs an adversarial review of all closed trades, finds weaknesses, auto-applies fixes that pass quality gates (score ≥6), and saves the report to Notion"
                 className="px-3 py-1 rounded-lg text-xs font-semibold transition-all hover:scale-105 flex items-center gap-1.5"
                 style={{background:evalStatus==='loading'?'#4b556333':'#a855f718',
                   color:evalStatus==='loading'?'#9ca3af':'#c084fc',
@@ -2402,6 +2410,7 @@ function DailyBrief(){
                 </select>
                 <button onClick={runConsistencyTest}
                   disabled={consistencyStatus==='running'}
+                  title={`Runs ${consistencyN} parallel evaluations on the same data and measures how consistent the recommendations are — stable findings = high confidence, fluctuating = low confidence`}
                   className="px-3 py-1 rounded-lg text-xs font-semibold transition-all hover:scale-105 flex items-center gap-1.5"
                   style={{background:consistencyStatus==='running'?'#4b556333':'#f59e0b18',
                     color:consistencyStatus==='running'?'#9ca3af':'#f59e0b',
