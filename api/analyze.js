@@ -564,7 +564,7 @@ module.exports = async (req, res) => {
   // ── PHASE: AI — skip all data fetching, use pre-fetched context ───────
   if (phase === 'ai' && parsed.context) {
     const context = parsed.context;
-    const modelId = parsed.modelId || 'claude-sonnet-4-6';
+    const modelId = parsed.modelId || 'claude-haiku-4-5-20251001';
     const maxTokens = parsed.maxTokens || 4096;
     const openFormatted = parsed.openFormatted || [];
     const walletState = parsed.walletState || { cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 };
@@ -1138,7 +1138,7 @@ ADDITIONAL RULES:
       _phase: 'data',
       context,
       mode: isDiagnoseMode ? 'diagnose' : (isDiscoverMode ? 'discover' : (isAssessMode ? 'assess' : mode)),
-      modelId: (isQuick && !isAssessMode && !isDiscoverMode && !isDiagnoseMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
+      modelId: 'claude-haiku-4-5-20251001',
       maxTokens: isQuick ? 2048 : 3000,
       assessTicker: assessTicker || null,
       consistencyN,
@@ -1198,7 +1198,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
 
   // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments + discovery + diagnose
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
-  const modelId = (isQuick && !isAssessMode && !isDiscoverMode && !isDiagnoseMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
+  const modelId = 'claude-haiku-4-5-20251001';
   const maxTokens = isQuick ? 2048 : 3000;
   const systemPrompt = isDiagnoseMode ? diagnoseSystemPrompt : (isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt)));
 
