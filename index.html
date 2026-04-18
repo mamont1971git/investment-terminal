@@ -1412,6 +1412,7 @@ function DailyBrief(){
   const [portfolioMetrics,setPortfolioMetrics]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [posStatus,setPosStatus]=useState('idle'); // idle | loading | done | failed
+  const [aiCheckStatus,setAiCheckStatus]=useState('idle'); // idle | loading | done | failed
 
   // Evaluation flow state
   const [evalStatus,setEvalStatus]=useState('idle');
@@ -1571,7 +1572,41 @@ function DailyBrief(){
     else{setLive({vix:d.vix,spy:d.spy,fg:d.fg});setStatus('done');setTs(new Date());}
   },[]);
 
+  // ── Auto quick check: after positions load, run Claude analysis in background ──
+  const runAutoQuickCheck=useCallback(async()=>{
+    if(window.location.protocol==='file:')return;
+    setAiCheckStatus('loading');
+    try{
+      const r=await fetch('/api/analyze',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({command:'live market pulse',mode:'quick'}),
+      });
+      const d=await r.json();
+      if(d.error){setAiCheckStatus('failed');return;}
+      // Merge Claude's recommendations into positions
+      if(d.positions&&d.positions.length>0){
+        setPositions(prev=>prev.map(p=>{
+          const ai=d.positions.find(ap=>ap.ticker===p.ticker);
+          if(!ai)return p;
+          return{...p,
+            recommendation:ai.recommendation||p.recommendation,
+            right:ai.reasoning||p.right,
+            urgency:ai.urgency||p.urgency,
+            _aiChecked:true,
+          };
+        }));
+      }
+      setAiCheckStatus('done');
+    }catch(e){setAiCheckStatus('failed');}
+  },[]);
+
   useEffect(()=>{refresh();fetchPositions();},[]);
+  // Auto-run quick check once positions are loaded
+  useEffect(()=>{
+    if(posStatus==='done'&&positions.length>0&&aiCheckStatus==='idle'){
+      runAutoQuickCheck();
+    }
+  },[posStatus,positions.length,aiCheckStatus,runAutoQuickCheck]);
   // Listen for draft confirmations to refresh positions
   useEffect(()=>{
     const h=()=>{setTimeout(fetchPositions,2000);};
@@ -1919,6 +1954,8 @@ function DailyBrief(){
               style={{borderBottom:'1px solid #0f1828'}}>
               <span className="text-xs font-bold uppercase tracking-wider text-gray-500">
                 Open Paper Trades ({positions.length})
+                {aiCheckStatus==='loading'&&<span className="ml-2 text-yellow-500 animate-pulse">⚡ AI analyzing…</span>}
+                {aiCheckStatus==='done'&&<span className="ml-2 text-green-500">✓ AI verdicts live</span>}
               </span>
               <div className="flex gap-2 items-center">
                 <button onClick={async(e)=>{
