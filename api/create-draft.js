@@ -42,9 +42,15 @@ module.exports = async (req, res) => {
   const ticker=(t.ticker||'').toUpperCase();
   if (!ticker) return res.status(400).json({error:'ticker required'});
 
-  let entryPrice = t.entryPrice ? parseFloat(t.entryPrice) : null;
-  if (!entryPrice && ALPHA) entryPrice = await fetchPrice(ticker, ALPHA);
-  if (!entryPrice) return res.status(503).json({error:`Could not fetch price for ${ticker}`});
+  // ALWAYS use the live market price — never trust Claude's suggested price
+  // Claude's training data has stale prices (e.g., 2025 prices for 2026 trades)
+  let entryPrice = null;
+  if (ALPHA) entryPrice = await fetchPrice(ticker, ALPHA);
+  if (!entryPrice) {
+    // API failed — fall back to Claude's suggestion as last resort, but warn
+    entryPrice = t.entryPrice ? parseFloat(t.entryPrice) : null;
+  }
+  if (!entryPrice) return res.status(503).json({error:`Could not fetch live price for ${ticker}. Try again.`});
 
   const stop=+(entryPrice*0.93).toFixed(2), tp1=+(entryPrice*1.08).toFixed(2),
         tp2=+(entryPrice*1.15).toFixed(2), tp3=+(entryPrice*1.22).toFixed(2);

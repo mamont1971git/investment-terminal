@@ -630,6 +630,44 @@ module.exports = async (req, res) => {
     if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 150));
   }
 
+  // AUTO-REPAIR: fix entry prices that were set from stale Claude data
+  // If position opened <7 days ago and entry differs from live price by >30%, fix it
+  const repaired = [];
+  for (const t of openTrades) {
+    const livePrice = quotePrices[t.ticker];
+    if (!livePrice || !t.entryPrice || !t.dateOpened) continue;
+    const daysOpen = Math.floor((Date.now() - new Date(t.dateOpened).getTime()) / 86400000);
+    const priceDiff = Math.abs((livePrice - t.entryPrice) / t.entryPrice * 100);
+    if (daysOpen <= 7 && priceDiff > 30) {
+      // Entry price is clearly wrong — repair it with live price and recalculate targets
+      const newEntry = livePrice;
+      const newStop = +(newEntry * 0.93).toFixed(2);
+      const newTp1 = +(newEntry * 1.08).toFixed(2);
+      const newTp2 = +(newEntry * 1.15).toFixed(2);
+      const newTp3 = +(newEntry * 1.22).toFixed(2);
+      try {
+        const body = JSON.stringify({ properties: {
+          'Entry Price': { number: newEntry },
+          'Stop-Loss Price': { number: newStop },
+          'TP1': { number: newTp1 }, 'TP2': { number: newTp2 }, 'TP3': { number: newTp3 },
+        }});
+        await new Promise(resolve => {
+          const req = https.request({
+            hostname: 'api.notion.com', path: `/v1/pages/${t.id}`, method: 'PATCH',
+            headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) },
+          }, r => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>resolve()); });
+          req.on('error',()=>resolve()); req.write(body); req.end();
+        });
+        // Update in-memory data so this response is already correct
+        repaired.push({ ticker: t.ticker, oldEntry: t.entryPrice, newEntry, newStop, newTp1, newTp2 });
+        t.entryPrice = newEntry;
+        t.stopLoss = newStop;
+        t.tp1 = newTp1; t.tp2 = newTp2; t.tp3 = newTp3;
+      } catch {}
+    }
+  }
+
   // Enrich open trades with live data + TA
   const positions = openTrades.map(t => {
     const ta = taData[t.ticker];
@@ -654,8 +692,6 @@ module.exports = async (req, res) => {
       ? Math.floor((Date.now() - new Date(t.dateOpened).getTime()) / 86400000)
       : 0;
 
-    // Debug: log price sources for troubleshooting
-    const _priceDebug = { ohlcv: ohlcvPrice, quote: quotePrice, used: currentPrice, entry: t.entryPrice, dateOpened: t.dateOpened };
 
     // Derive recommendation
     let recommendation = 'HOLD';
@@ -701,7 +737,6 @@ module.exports = async (req, res) => {
       urgency: !currentPrice ? 'urgent' : urgency,
       indicators,
       priceAlert,
-      _priceDebug,
     };
   });
 
