@@ -654,6 +654,9 @@ module.exports = async (req, res) => {
       ? Math.floor((Date.now() - new Date(t.dateOpened).getTime()) / 86400000)
       : 0;
 
+    // Debug: log price sources for troubleshooting
+    const _priceDebug = { ohlcv: ohlcvPrice, quote: quotePrice, used: currentPrice, entry: t.entryPrice, dateOpened: t.dateOpened };
+
     // Derive recommendation
     let recommendation = 'HOLD';
     let urgency = 'ok';
@@ -698,6 +701,7 @@ module.exports = async (req, res) => {
       urgency: !currentPrice ? 'urgent' : urgency,
       indicators,
       priceAlert,
+      _priceDebug,
     };
   });
 
