@@ -42,6 +42,20 @@ module.exports = async (req, res) => {
   const ticker=(t.ticker||'').toUpperCase();
   if (!ticker) return res.status(400).json({error:'ticker required'});
 
+  // DEDUP: check if Draft/Paper/Open entry already exists for this ticker
+  try {
+    const checkResult = await notionPost(`/v1/databases/${TRADE_DB}/query`, {
+      filter:{and:[
+        {property:'Ticker',rich_text:{equals:ticker}},
+        {property:'Simulation Mode',checkbox:{equals:true}},
+        {or:[{property:'Status',select:{equals:'Draft'}},{property:'Status',select:{equals:'Paper'}},{property:'Status',select:{equals:'Open'}}]}
+      ]},page_size:1
+    }, TOKEN);
+    if (checkResult.body?.results?.length > 0) {
+      return res.json({ok:false, error:`${ticker} already has an active Draft or Paper trade`, duplicate:true});
+    }
+  } catch{}
+
   // ALWAYS use the live market price — never trust Claude's suggested price
   // Claude's training data has stale prices (e.g., 2025 prices for 2026 trades)
   let entryPrice = null;

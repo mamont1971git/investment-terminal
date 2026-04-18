@@ -489,7 +489,25 @@ function formatTA(ta) {
 }
 
 async function createDraft(ticker, strategy, score, reasoning, regime, positionPct, entryPrice, token, alphaKey, signalAttribution) {
-  // Reuse create-draft logic inline
+  // DEDUP: check Notion for any existing Draft or Paper entry with this ticker
+  try {
+    const checkData = JSON.stringify({filter:{and:[
+      {property:'Ticker',rich_text:{equals:ticker}},
+      {property:'Simulation Mode',checkbox:{equals:true}},
+      {or:[{property:'Status',select:{equals:'Draft'}},{property:'Status',select:{equals:'Paper'}},{property:'Status',select:{equals:'Open'}}]}
+    ]},page_size:1});
+    const existing = await new Promise(resolve=>{
+      const req=https.request({hostname:'api.notion.com',path:`/v1/databases/${TRADE_DB}/query`,method:'POST',
+        headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json','Notion-Version':'2022-06-28','Content-Length':Buffer.byteLength(checkData)}
+      },res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}});});
+      req.on('error',()=>resolve({}));req.write(checkData);req.end();
+    });
+    if (existing.results && existing.results.length > 0) {
+      return { ok: false, skipped: true, reason: `${ticker} already has a Draft/Paper/Open entry`, existingId: existing.results[0].id };
+    }
+  } catch{}
+
+  // Create the draft
   const stop=+(entryPrice*0.93).toFixed(2),tp1=+(entryPrice*1.08).toFixed(2),
         tp2=+(entryPrice*1.15).toFixed(2),tp3=+(entryPrice*1.22).toFixed(2);
   const today=new Date().toISOString().split('T')[0];
@@ -728,6 +746,7 @@ RULES: BUY needs score≥65, WATCHLIST 50-64. Max 5 opportunities. Every BUY nee
           if ((opp.positionDollars || price) > walletState.cashBalance) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Insufficient funds' }); continue; }
           const draft = await createDraft(opp.ticker, opp.strategy, opp.score, opp.reasoning, analysis.regime?.name, opp.positionPct, price, NOTION_TOKEN, ALPHA_KEY, opp.signalAttribution);
           if (draft.ok) { draftsCreated.push(draft); draftedThisRun.add(tickerKey); }
+          else if (draft.skipped) { draftsSkipped.push({ ticker: opp.ticker, reason: draft.reason }); }
         }
       }
     }
@@ -1588,6 +1607,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
             opp.signalAttribution
           );
           if (draft.ok) { draftsCreated.push(draft); draftedThisRun.add(tickerKey); }
+          else if (draft.skipped) { draftsSkipped.push({ ticker: opp.ticker, reason: draft.reason }); }
         }
       }
     }
