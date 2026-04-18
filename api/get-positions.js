@@ -662,7 +662,11 @@ module.exports = async (req, res) => {
     ),
   ]);
 
-  const openTrades = (openResult.results || []).map(formatTrade);
+  const isRemoved = t => {
+    const title = (t.title || '').toLowerCase();
+    return title.includes('removed') || title.includes('duplicate') || title.includes('\ud83d\uddd1') || title.includes('\u274c');
+  };
+  const openTrades = (openResult.results || []).map(formatTrade).filter(t => !isRemoved(t));
   const closedTrades = (closedResult.results || []).map(formatTrade);
 
   // Compute wallet state

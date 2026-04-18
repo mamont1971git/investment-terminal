@@ -374,6 +374,7 @@ function formatTrade(p) {
   const props = p.properties;
   return {
     notionId: p.id,
+    title: props['Trade']?.title?.[0]?.plain_text || '',
     ticker: props['Ticker']?.rich_text?.[0]?.plain_text || '',
     strategy: props['Strategy']?.select?.name || '',
     entry: props['Entry Price']?.number,
@@ -689,7 +690,11 @@ module.exports = async (req, res) => {
     } catch {}
   }
 
-  const openFormatted = openTrades.map(formatTrade);
+  const openFormatted = openTrades.map(formatTrade).filter(t => {
+    // Skip removed/duplicate entries that might still have Paper status
+    const title = (t.title || '').toLowerCase();
+    return !title.includes('removed') && !title.includes('duplicate') && !title.includes('\ud83d\uddd1') && !title.includes('\u274c');
+  });
   const closedFormatted = closedTrades.map(formatTrade);
   const today = new Date().toDateString();
 
