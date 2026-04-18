@@ -42,6 +42,13 @@ module.exports = async (req, res) => {
   const ticker=(t.ticker||'').toUpperCase();
   if (!ticker) return res.status(400).json({error:'ticker required'});
 
+  // Enforce configurable minimum score threshold for BUY drafts
+  const minScore = Number(t.minScore) || 65;
+  const score = t.score ? Number(t.score) : null;
+  if (score !== null && score < minScore) {
+    return res.json({ok:false, error:`Score ${score} is below the minimum threshold of ${minScore} for draft creation`});
+  }
+
   // DEDUP: check if Draft/Paper/Open entry already exists for this ticker
   try {
     const checkResult = await notionPost(`/v1/databases/${TRADE_DB}/query`, {

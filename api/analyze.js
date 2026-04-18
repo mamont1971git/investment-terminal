@@ -564,6 +564,7 @@ module.exports = async (req, res) => {
   const phase = parsed.phase || 'all'; // 'data' = fetch only, 'ai' = Claude only, 'all' = legacy single-call
   const command = parsed.command || 'run investment analysis';
   const mode = parsed.mode || 'full'; // 'quick' = Haiku (cheap), 'full' = Sonnet (deep + attribution)
+  let minScore = Number(parsed.minScore) || 65; // configurable BUY threshold (default 65)
 
   // Detect single-ticker assessment mode
   const tickerMatch = command.match(/^score\s+([A-Z]{1,5})$/i) || command.match(/^assess\s+([A-Z]{1,5})$/i);
@@ -622,7 +623,7 @@ Respond with JSON: {"regime":{"name":"...","headline":"...","why":"...","action"
 "opportunities":[{"ticker":"XXXX","score":number,"action":"BUY|WATCHLIST","strategy":"Mean Reversion|Breakout Momentum|Earnings Catalyst","reasoning":"2-3 sentences","stop":number,"tp1":number,"tp2":number,"positionPct":number,"positionDollars":number,"shares":number,"waitingFor":"only if WATCHLIST",
 "signalAttribution":[{"source":"...","weight":number,"signal":"brief","verdict":"BULLISH|BEARISH|NEUTRAL"}]}],
 "insights":"1 key observation","stance":"Aggressive|Moderate|Defensive","recommendedCash":"XX%"}
-RULES: BUY needs score≥65, WATCHLIST 50-64. Max 5 opportunities. Every BUY needs stop, tp1, tp2, positionDollars (max $${walletState.cashBalance.toFixed(2)}). Never recommend tickers already held.`;
+RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${minScore-1}. Max 5 opportunities. Every BUY needs stop, tp1, tp2, positionDollars (max $${walletState.cashBalance.toFixed(2)}). Never recommend tickers already held.`;
     }
 
     const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
@@ -735,7 +736,7 @@ RULES: BUY needs score≥65, WATCHLIST 50-64. Max 5 opportunities. Every BUY nee
     const draftsSkipped = [];
     if (NOTION_TOKEN && ALPHA_KEY && analysis.opportunities) {
       for (const opp of analysis.opportunities) {
-        if (opp.action === 'BUY' && opp.score >= 65 && opp.ticker) {
+        if (opp.action === 'BUY' && opp.score >= minScore && opp.ticker) {
           const tickerKey = opp.ticker.toUpperCase();
           if (openTickerSet.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Already held' }); continue; }
           if (existingDraftTickers.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Draft already exists' }); continue; }
@@ -768,6 +769,29 @@ RULES: BUY needs score≥65, WATCHLIST 50-64. Max 5 opportunities. Every BUY nee
     (!isQuick) ? fetchCapitolTrades() : Promise.resolve([]),
     (!isQuick && !isDiagnoseMode && NOTION_TOKEN) ? fetchApprovedTunings(NOTION_TOKEN) : Promise.resolve([]),
   ]);
+
+  // ── Tuning-derived minScore override ──────────────────────────────────
+  // If approved tunings contain scoring/regime threshold changes, extract
+  // the numeric value and use the highest as the effective hard gate.
+  // This closes the feedback loop: evaluate → tune → enforce automatically.
+  let tuningMinScore = null;
+  if (approvedTunings && approvedTunings.length > 0) {
+    for (const t of approvedTunings) {
+      if (t.category === 'scoring' || t.category === 'regime') {
+        // Extract numeric threshold from paramAfter, e.g. "Draft threshold: score >= 75"
+        const match = (t.paramAfter || '').match(/(?:score\s*>=?\s*|threshold:\s*)(\d+)/i);
+        if (match) {
+          const val = Number(match[1]);
+          if (val > 0 && (tuningMinScore === null || val > tuningMinScore)) {
+            tuningMinScore = val;
+          }
+        }
+      }
+    }
+    if (tuningMinScore !== null && tuningMinScore > minScore) {
+      minScore = tuningMinScore;
+    }
+  }
 
   // For diagnose mode, also fetch ALL closed trades (not just recent 8)
   let allClosedTrades = closedTrades;
@@ -1031,7 +1055,7 @@ Respond with a JSON object (no markdown, pure JSON):
 
 RULES:
 - Already held: ${openTickers.length ? openTickers.join(', ') : 'none'} — do NOT recommend BUY for these. Use positions array for HOLD/EXIT/TP.
-- BUY needs score≥65, WATCHLIST 50-64. Skip entries below 50.
+- BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${minScore-1}. Skip entries below ${Math.max(0,minScore-15)}.
 - Every BUY: stop, tp1, tp2, positionDollars (max $${walletState.cashBalance.toFixed(2)} total), shares. No entryPrice — system fetches live.
 - Max risk 1% of $${walletState.totalValue.toFixed(0)} per trade. Cite 2-3 indicator values per reasoning.
 - Keep response CONCISE. Max 3 opportunities. Short reasoning (2 sentences).
@@ -1537,7 +1561,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
     analysis.opportunities = Object.values(best);
   }
 
-  // Auto-create Order Drafts for BUY opportunities with score ≥ 65
+  // Auto-create Order Drafts for BUY opportunities with score ≥ minScore
   // Skip tickers that already have open positions or existing drafts
   const openTickerSet = new Set(openFormatted.map(t => t.ticker.toUpperCase()).filter(Boolean));
   // Fetch existing drafts to prevent duplicates
@@ -1562,7 +1586,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   const draftsSkipped = [];
   if (NOTION_TOKEN && ALPHA_KEY && analysis.opportunities) {
     for (const opp of analysis.opportunities) {
-      if (opp.action === 'BUY' && opp.score >= 65 && opp.ticker) {
+      if (opp.action === 'BUY' && opp.score >= minScore && opp.ticker) {
         const tickerKey = opp.ticker.toUpperCase();
         // Prevent duplicate positions
         if (openTickerSet.has(tickerKey)) {
@@ -1619,6 +1643,8 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   if (isDiagnoseMode && diagnosticData) analysis._diagnostics = diagnosticData;
   if (isConsistencyMode && consistencyReport) analysis._consistency = consistencyReport;
   analysis._activeTunings = approvedTunings ? approvedTunings.length : 0;
+  analysis._effectiveMinScore = minScore;
+  if (tuningMinScore !== null) analysis._tuningMinScore = tuningMinScore;
 
   // Track source availability for frontend alerts
   analysis._sourceStatus = {

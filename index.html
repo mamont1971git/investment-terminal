@@ -802,7 +802,8 @@ function BuyOpportunityCard({o,regime,onDraftCreated}){
         body:JSON.stringify({
           ticker:o.ticker,strategy:o.strategy||'Mean Reversion',
           score:o.score,reasoning:o.reasoning,regime:regime||'',
-          positionPct:o.positionPct,entryPrice:o.entryPrice
+          positionPct:o.positionPct,entryPrice:o.entryPrice,
+          minScore:load('inv_minScore',65)
         }),
       });
       const d=await r.json();
@@ -867,18 +868,19 @@ function TickerAssess(){
   const assess=async()=>{
     const t=ticker.trim().toUpperCase();
     if(!t)return;
+    const minScore=load('inv_minScore',65);
     setLoading(true);setError(null);setResult(null);
     try{
       // Two-phase: data fetch → AI analysis
       const r1=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ticker:t,thesis:thesis.trim()||undefined,command:`score ${t}`,mode:'full',phase:'data'}),
+        body:JSON.stringify({ticker:t,thesis:thesis.trim()||undefined,command:`score ${t}`,mode:'full',phase:'data',minScore}),
       });
       const dataResult=await r1.json();
       if(dataResult.error){setError(dataResult.error);return;}
       const r2=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({phase:'ai',...dataResult,command:`score ${t}`}),
+        body:JSON.stringify({phase:'ai',...dataResult,command:`score ${t}`,minScore}),
       });
       const d=await r2.json();
       if(d.error){setError(d.error);return;}
@@ -1018,6 +1020,8 @@ function AnalysisPanel(){
   const [result,setResult]=useState(null);
   const [error,setError]=useState(null);
   const [command,setCommand]=useState('full_analysis');
+  const [minScore,setMinScore]=useState(()=>load('inv_minScore',65));
+  const updateMinScore=(v)=>{const n=Math.max(0,Math.min(100,Number(v)||65));setMinScore(n);save('inv_minScore',n);};
 
   const run=async(cmd,mode='full')=>{
     if(window.location.protocol==='file:'){
@@ -1030,7 +1034,7 @@ function AnalysisPanel(){
         // Quick mode: single call (Haiku is fast enough)
         const r=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode}),
+          body:JSON.stringify({command:cmd,mode,minScore}),
         });
         const d=await r.json();
         if(d.error)throw new Error(d.error);
@@ -1039,7 +1043,7 @@ function AnalysisPanel(){
         // Split analysis: data fetch → parallel Haiku (positions) + Sonnet (opportunities)
         const r1=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode,phase:'data'}),
+          body:JSON.stringify({command:cmd,mode,phase:'data',minScore}),
         });
         const dataResult=await r1.json();
         if(dataResult.error)throw new Error(dataResult.error);
@@ -1047,11 +1051,11 @@ function AnalysisPanel(){
         const [posRes, oppRes] = await Promise.all([
           fetch('/api/analyze',{
             method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'positions',modelId:'claude-haiku-4-5-20251001',maxTokens:4096}),
+            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'positions',modelId:'claude-haiku-4-5-20251001',maxTokens:4096,minScore}),
           }),
           fetch('/api/analyze',{
             method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'opportunities',modelId:'claude-sonnet-4-6',maxTokens:8192}),
+            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'opportunities',modelId:'claude-sonnet-4-6',maxTokens:8192,minScore}),
           }),
         ]);
         const posData=await posRes.json();
@@ -1082,17 +1086,20 @@ function AnalysisPanel(){
           _phase: 'ai',
         };
         setResult(merged);
+        // Sync minScore if tuning overrides changed it server-side
+        const ems=oppData._effectiveMinScore||posData._effectiveMinScore;
+        if(ems&&ems!==minScore)updateMinScore(ems);
       }else{
         // Other modes (assess, discover, diagnose): single Sonnet call
         const r1=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode,phase:'data'}),
+          body:JSON.stringify({command:cmd,mode,phase:'data',minScore}),
         });
         const dataResult=await r1.json();
         if(dataResult.error)throw new Error(dataResult.error);
         const r2=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({phase:'ai',...dataResult,command:cmd}),
+          body:JSON.stringify({phase:'ai',...dataResult,command:cmd,minScore}),
         });
         const d=await r2.json();
         if(d.error){
@@ -1103,6 +1110,7 @@ function AnalysisPanel(){
           throw new Error(errMsg);
         }
         setResult(d);
+        if(d._effectiveMinScore&&d._effectiveMinScore!==minScore)updateMinScore(d._effectiveMinScore);
       }
     }catch(e){setError(e.message);}
     finally{setLoading(false);}
@@ -1125,8 +1133,18 @@ function AnalysisPanel(){
     <Card className="overflow-hidden">
       {/* header with run buttons */}
       <div className="px-4 py-3"style={{background:'#0f1828',borderBottom:'1px solid #1e2d4a'}}>
-        <div className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">
-          AI Analysis — powered by Claude
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-bold uppercase tracking-wider text-gray-400">
+            AI Analysis — powered by Claude
+          </div>
+          <div className="flex items-center gap-2" title="Minimum composite score for BUY recommendations (vs WATCHLIST). Auto-adjusted by evaluate+heal system.">
+            <label className="text-xs text-gray-500">BUY threshold:</label>
+            <input type="number" min="0" max="100" value={minScore}
+              onChange={e=>updateMinScore(e.target.value)}
+              className="w-14 text-xs text-center rounded px-1 py-0.5"
+              style={{background:'#1e2d4a',color:'#e2e8f0',border:'1px solid #334155'}}/>
+            {result?._tuningMinScore&&<span className="text-xs" style={{color:'#f59e0b'}} title={`Tuning override active: evaluate+heal raised threshold from default to ${result._tuningMinScore}`}>🔧</span>}
+          </div>
         </div>
         <div className="flex gap-2 flex-wrap">
           {cmds.map(c=>(
@@ -1651,7 +1669,7 @@ function DailyBrief(){
     try{
       const r=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({command:'live market pulse',mode:'quick'}),
+        body:JSON.stringify({command:'live market pulse',mode:'quick',minScore:load('inv_minScore',65)}),
       });
       const d=await r.json();
       if(d.error){setAiCheckStatus('failed');return;}
@@ -1694,13 +1712,13 @@ function DailyBrief(){
       // Two-phase: data fetch → AI diagnosis
       const r1=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({mode:'diagnose',command:'evaluate performance',phase:'data'})
+        body:JSON.stringify({mode:'diagnose',command:'evaluate performance',phase:'data',minScore:load('inv_minScore',65)})
       });
       const dataResult=await r1.json();
       if(dataResult.error){setEvalStatus('error');return;}
       const r2=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance'})
+        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance',minScore:load('inv_minScore',65)})
       });
       const d=await r2.json();
       if(d.parseError){setEvalStatus('error');return;}
@@ -1740,6 +1758,17 @@ function DailyBrief(){
       d._deferred=deferred;
       d._filtered=filtered;
       d._appliedCount=applied.filter(r=>r.ok).length;
+
+      // ── Feedback loop: if a scoring tuning was applied, sync minScore ──
+      for(const rec of qualified){
+        if((rec.category==='scoring'||rec.category==='regime')&&rec.suggestedMinScore){
+          const newMin=Number(rec.suggestedMinScore);
+          if(newMin>0&&newMin!==minScore){
+            updateMinScore(newMin);
+          }
+        }
+      }
+
       setEvalResults(d);
       setApplyStatus(applied.length>0?'done':'idle');
       setEvalStatus('done');
@@ -1783,13 +1812,13 @@ function DailyBrief(){
       // Two-phase: data fetch → AI consistency runs
       const r1=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({mode:'consistency',command:'evaluate performance',n:consistencyN,phase:'data'})
+        body:JSON.stringify({mode:'consistency',command:'evaluate performance',n:consistencyN,phase:'data',minScore:load('inv_minScore',65)})
       });
       const dataResult=await r1.json();
       if(dataResult.error){clearInterval(progInterval);setConsistencyStatus('done');setConsistencyReport({error:dataResult.error});return;}
       const r=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance'})
+        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance',minScore:load('inv_minScore',65)})
       });
       clearInterval(progInterval);
       const d=await r.json();

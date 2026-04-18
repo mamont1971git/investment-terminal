@@ -44,6 +44,8 @@ function runDiagnostics(closedTrades, openTrades = []) {
           category: 'regime',
           paramBefore: 'Draft threshold: 65 in all regimes',
           paramAfter: `Draft threshold: ${regimeWR === 0 ? 85 : 80} in ${regime}`,
+          suggestedMinScore: regimeWR === 0 ? 85 : 80,
+          regimeSpecific: regime,
           priority: regimeWR === 0 ? 'Critical' : 'High',
         },
       });
@@ -319,6 +321,7 @@ function runDiagnostics(closedTrades, openTrades = []) {
             category: 'scoring',
             paramBefore: 'Draft threshold: score >= 65',
             paramAfter: 'Draft threshold: score >= 75 (mid-range scores are unreliable)',
+            suggestedMinScore: 75,
             priority: 'High',
           },
         });
@@ -338,6 +341,7 @@ function runDiagnostics(closedTrades, openTrades = []) {
             category: 'scoring',
             paramBefore: 'Current composite scoring weights',
             paramAfter: 'Recalibrate scoring: increase weight of Technical Setup, reduce Fundamental (based on actual outcomes)',
+            suggestedMinScore: 80,
             priority: 'Critical',
           },
         });
