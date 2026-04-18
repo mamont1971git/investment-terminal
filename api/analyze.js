@@ -579,7 +579,7 @@ module.exports = async (req, res) => {
     const diagnoseSP = `You are an ADVERSARIAL performance reviewer for an algorithmic trading system. Return only valid JSON, no markdown. Find weaknesses, miscalibrations, and missed opportunities. Be brutally honest.`;
 
     const resolvedMode = parsed.mode || mode;
-    const sysPrompt = resolvedMode === 'diagnose' ? diagnoseSP : resolvedMode === 'discover' ? discoverSP : resolvedMode === 'assess' ? assessSP : modelId.includes('haiku') ? quickSP : fullSP;
+    const sysPrompt = resolvedMode === 'diagnose' ? diagnoseSP : resolvedMode === 'discover' ? discoverSP : resolvedMode === 'assess' ? assessSP : (resolvedMode === 'quick' ? quickSP : fullSP);
 
     const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
     async function aiCall(runNum) {
