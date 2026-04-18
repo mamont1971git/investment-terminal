@@ -566,7 +566,7 @@ module.exports = async (req, res) => {
   if (phase === 'ai' && parsed.context) {
     const context = parsed.context;
     const modelId = parsed.modelId || 'claude-haiku-4-5-20251001';
-    const maxTokens = parsed.maxTokens || 4096;
+    const maxTokens = parsed.maxTokens || 8192;
     const openFormatted = parsed.openFormatted || [];
     const walletState = parsed.walletState || { cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 };
     const openTickers = parsed.openTickers || [];
@@ -1187,7 +1187,7 @@ ADDITIONAL RULES:
       context,
       mode: isDiagnoseMode ? 'diagnose' : (isDiscoverMode ? 'discover' : (isAssessMode ? 'assess' : mode)),
       modelId: 'claude-haiku-4-5-20251001',
-      maxTokens: isQuick ? 2048 : 4096,
+      maxTokens: isQuick ? 2048 : 8192,
       assessTicker: assessTicker || null,
       consistencyN,
       openTickers: openFormatted.map(t => t.ticker).filter(Boolean),
