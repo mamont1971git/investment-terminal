@@ -529,12 +529,14 @@ module.exports = async (req, res) => {
     // Route: purge simulation positions only (archive + return cash to wallet)
     if (parsed.action === 'purge_positions') {
       try {
-        // ONLY purge simulation/paper trades — never real holdings
+        // ONLY purge simulation trades — never real holdings
+        // Catches all simulation statuses: Paper, Open, Draft
         const openResult = await notionQueryDB(TRADE_DB,
           { and: [
             { property: 'Simulation Mode', checkbox: { equals: true } },
             { or: [
               { property: 'Status', select: { equals: 'Paper' } },
+              { property: 'Status', select: { equals: 'Open' } },
               { property: 'Status', select: { equals: 'Draft' } },
             ]},
           ]},
