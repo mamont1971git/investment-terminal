@@ -566,12 +566,12 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
         } else if(aboveEntry>=0){
           // in profit, heading toward TP1
           verdict='HOLD';verdictIcon='📊';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
-          verdictReason=`In profit +${fmt(aboveEntry,1)}% — ${fmt(toTp1,1)}% to TP1 ($${fmt(tp1)})`;
+          verdictReason=toTp1!=null?`In profit +${fmt(aboveEntry,1)}% — ${fmt(toTp1,1)}% to TP1 ($${fmt(tp1)})`:`In profit +${fmt(aboveEntry,1)}%`;
           primaryAction=null;primaryLabel='';
         } else {
           // underwater but above stop
           verdict='HOLD — UNDERWATER';verdictIcon='📊';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
-          verdictReason=`Down ${fmt(Math.abs(aboveEntry),1)}% — ${fmt(toStop,1)}% cushion to stop ($${fmt(stop)})`;
+          verdictReason=toStop!=null?`Down ${fmt(Math.abs(aboveEntry),1)}% — ${fmt(toStop,1)}% cushion to stop ($${fmt(stop)})`:`Down ${fmt(Math.abs(aboveEntry),1)}% from entry`;
           primaryAction=null;primaryLabel='';
         }
 
