@@ -362,6 +362,41 @@ module.exports = async (req, res) => {
       return res.json({ ok: true, walletTx: result.id, newBalance, walletState: { ...walletState, cashBalance: newBalance } });
     }
 
+    // Route: update stop-loss price on an open position (tighten to breakeven)
+    if (parsed.action === 'update_stop') {
+      const { notionId, newStop, ticker } = parsed;
+      if (!notionId || newStop == null) return res.status(400).json({ error: 'notionId and newStop required' });
+      const body = JSON.stringify({
+        properties: {
+          'Stop-Loss Price': { number: Number(newStop) },
+          'What Went Right': { rich_text: [{ text: { content: `Stop tightened to breakeven ($${Number(newStop).toFixed(2)}) on ${new Date().toISOString().split('T')[0]} — system auto-recommendation` } }] },
+        }
+      });
+      return new Promise(resolve => {
+        const req = https.request({
+          hostname: 'api.notion.com', path: `/v1/pages/${notionId}`, method: 'PATCH',
+          headers: {
+            'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body),
+          },
+        }, response => {
+          let d = ''; response.on('data', c => d += c);
+          response.on('end', () => {
+            try {
+              const r = JSON.parse(d);
+              if (response.statusCode < 300) {
+                resolve(res.json({ ok: true, ticker, newStop: Number(newStop) }));
+              } else {
+                resolve(res.status(400).json({ error: r.message || 'Failed to update stop', detail: r }));
+              }
+            } catch { resolve(res.status(500).json({ error: 'Parse error' })); }
+          });
+        });
+        req.on('error', () => resolve(res.status(500).json({ error: 'Network error' })));
+        req.write(body); req.end();
+      });
+    }
+
     // Route: write tuning recommendation to Notion Tuning Log
     if (parsed.action === 'tuning_log') {
       const rec = parsed.rec;

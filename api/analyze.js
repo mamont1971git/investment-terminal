@@ -615,7 +615,17 @@ Respond with JSON: {"regime":{"name":"...","headline":"...","why":"...","action"
 "positions":[{"ticker":"XXXX","recommendation":"HOLD|TAKE_PROFIT|EXIT_NOW|TIGHTEN_STOP","currentPrice":null,"pnlPct":null,"reasoning":"1-2 sentences","urgency":"urgent|watch|ok",
 "signalAttribution":[{"source":"...","weight":number,"signal":"brief","verdict":"BULLISH|BEARISH|NEUTRAL"}]}],
 "stance":"Aggressive|Moderate|Defensive","nextCheckIn":"..."}
-RULES: Every position needs a recommendation. Cite specific indicator values. If near stop or TP1, flag urgency.`;
+RULES: Every position needs a DECISIVE recommendation — you are the expert, not an advisor. Cite specific indicator values.
+URGENCY DECISION MATRIX (non-negotiable):
+- Earnings ≤1 trading day + P&L < +3% → EXIT_NOW (binary risk not justified without cushion)
+- Earnings ≤1 trading day + P&L ≥ +3% → TIGHTEN_STOP to breakeven (protect gains through event)
+- Earnings 2-5 days + P&L negative → EXIT_NOW (cut loss before binary event)
+- Earnings 2-5 days + P&L +0-5% → TIGHTEN_STOP to breakeven, urgency "urgent"
+- Earnings 2-5 days + P&L > +5% → HOLD with tightened stop, urgency "watch"
+- Price within 2% of stop-loss → EXIT_NOW (stop about to trigger, don't wait)
+- Price within 2% of TP1 → TAKE_PROFIT (close enough, don't get greedy)
+- Time in trade >10 days + P&L < +3% → EXIT_NOW (time stop)
+Flag urgency: "urgent" for any action needed within 24h, "watch" for 2-5 days, "ok" otherwise.`;
     } else if (splitRole === 'opportunities') {
       finalContext += `\n\nYou are ONLY finding NEW buy opportunities. Positions are handled separately.
 Already held (do NOT recommend): ${openTickers.join(', ') || 'none'}
@@ -1060,6 +1070,11 @@ RULES:
 - Max risk 1% of $${walletState.totalValue.toFixed(0)} per trade. Cite 2-3 indicator values per reasoning.
 - Keep response CONCISE. Max 3 opportunities. Short reasoning (2 sentences).
 - NEVER recommend the same ticker twice. Each ticker appears at most ONCE in opportunities.
+POSITION URGENCY RULES (you are the expert — make the decision, never just flag):
+- Earnings ≤1 day + P&L < +3% → EXIT_NOW | Earnings ≤1 day + P&L ≥ +3% → TIGHTEN_STOP
+- Earnings 2-5 days + P&L negative → EXIT_NOW | Earnings 2-5 days + P&L 0-5% → TIGHTEN_STOP, urgent
+- Price within 2% of stop → EXIT_NOW | Price within 2% of TP1 → TAKE_PROFIT
+- >10 days held + P&L < +3% → EXIT_NOW (time stop)
 ${attributionRulesText}`;
 
   // ── ASSESS MODE: deep single-ticker analysis ──────────────────────────

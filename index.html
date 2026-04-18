@@ -417,6 +417,27 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   const [showAllActions,setShowAllActions]=useState(false);
 
   const handleClose=async(action,label)=>{
+    // Tighten stop is an update, not a close
+    if(action==='tighten_stop'){
+      const newStop=t.entryPrice;
+      if(!confirm(`Tighten stop for ${t.ticker} to breakeven ($${fmt(newStop)})?\n\nThis updates the stop-loss in Notion.`))return;
+      setClosing(action);
+      try{
+        const r=await fetch('/api/get-positions',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'update_stop',notionId:t.id,ticker:t.ticker,newStop})
+        });
+        const d=await r.json();
+        if(d.ok){
+          alert(`✅ ${t.ticker} stop tightened to $${fmt(newStop)} (breakeven)`);
+          setTimeout(()=>{onClose&&onClose();},1000);
+        }else{
+          alert('Failed to update stop: '+(d.error||'unknown error'));
+        }
+      }catch(e){alert('Error: '+e.message);}
+      finally{setClosing(null);}
+      return;
+    }
     if(!confirm(`${label} for ${t.ticker}?\n\nThis will close the position in Notion.`))return;
     setClosing(action);
     try{
@@ -515,12 +536,22 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
     verdictReason=`Only ${fmt(_toStop,1)}% above your stop. Be ready to exit.${_earningsWarn}`;
     primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(_price)}`;
+  } else if(_rec==='TIGHTEN_STOP'){
+    verdict='TIGHTEN STOP';verdictIcon='🔧';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+    verdictReason=t.right?t.right.slice(0,120):`Tighten stop to breakeven ($${fmt(t.entry)}).${_earningsWarn}`;
+    primaryAction='tighten_stop';primaryLabel=`Tighten Stop → $${fmt(t.entry)}`;
+  } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3&&_aboveEntry<0){
+    verdict='EXIT — EARNINGS RISK';verdictIcon='🚨';verdictColor='#ef4444';verdictBg='#1a0808';verdictBorder='#7f1d1d';
+    verdictReason=`Down ${fmt(Math.abs(_aboveEntry),1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. System rule: exit losing positions before binary events.`;
+    primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(_price)}`;
+  } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3&&_aboveEntry>=0&&_aboveEntry<3){
+    verdict='TIGHTEN — EARNINGS';verdictIcon='⚡';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+    verdictReason=`Up +${fmt(_aboveEntry,1)}% but thin cushion. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Tightening stop to breakeven.`;
+    primaryAction='tighten_stop';primaryLabel=`Tighten Stop → $${fmt(t.entry)}`;
   } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3){
-    verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-    verdictReason=_aboveEntry>=0
-      ?`Up +${fmt(_aboveEntry,1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Decide: lock in gains or hold through.`
-      :`Down ${fmt(Math.abs(_aboveEntry),1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Risk of further drop.`;
-    primaryAction=null;primaryLabel='';
+    verdict='HOLD — EARNINGS WATCH';verdictIcon='⚡';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
+    verdictReason=`Up +${fmt(_aboveEntry,1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Good cushion — holding with tightened stop.`;
+    primaryAction='tighten_stop';primaryLabel=`Tighten Stop → $${fmt(t.entry)}`;
   } else if(_aboveEntry>=0){
     verdict='DO NOTHING';verdictIcon='✅';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
     verdictReason=_toTp1!=null?`Up +${fmt(_aboveEntry,1)}%. Target is ${fmt(_toTp1,1)}% away. Let it run.`:`Up +${fmt(_aboveEntry,1)}%. Let it run.`;
@@ -644,6 +675,17 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
                       <span style={{color:currentProfit!=null&&currentProfit>0?'#4ade8088':'#f8717188',fontSize:'10px'}}>
                         {currentProfit!=null?`${currentProfit>0?'+':''}$${fmt(currentProfit,0)}`:'market'}
                       </span>
+                    </>}
+                  </button>
+                )}
+                {primaryAction!=='tighten_stop'&&(
+                  <button onClick={()=>handleClose('tighten_stop',`Tighten Stop → $${fmt(t.entryPrice)}`)}
+                    disabled={!!closing}
+                    className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
+                    style={{background:'#0a0c1a88',border:'1px solid #3b82f633',opacity:0.7}}>
+                    {closing==='tighten_stop'?<Spin/>:<>
+                      <span style={{color:'#3b82f6',fontSize:'11px'}}>Tighten → ${fmt(t.entryPrice)}</span>
+                      <span style={{color:'#3b82f688',fontSize:'10px'}}>breakeven</span>
                     </>}
                   </button>
                 )}
