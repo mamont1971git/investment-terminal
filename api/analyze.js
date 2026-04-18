@@ -604,6 +604,27 @@ module.exports = async (req, res) => {
     analysis._worldMonitor = parsed._worldMonitor || {};
     analysis.wallet = walletState;
 
+    // Deduplicate opportunities — keep highest-scored entry per ticker
+    if (analysis.opportunities && analysis.opportunities.length > 1) {
+      const seen = {};
+      analysis.opportunities = analysis.opportunities.filter(opp => {
+        const key = (opp.ticker || '').toUpperCase();
+        if (!key) return true;
+        if (!seen[key] || (opp.score || 0) > (seen[key].score || 0)) {
+          seen[key] = opp;
+          return true;
+        }
+        return false;
+      });
+      // Keep only the best per ticker
+      const best = {};
+      for (const opp of analysis.opportunities) {
+        const key = (opp.ticker || '').toUpperCase();
+        if (!best[key] || (opp.score || 0) > (best[key].score || 0)) best[key] = opp;
+      }
+      analysis.opportunities = Object.values(best);
+    }
+
     // Auto-create drafts for BUY opportunities
     const openTickerSet = new Set(openTickers.map(t => t.toUpperCase()));
     const draftsCreated = [];
@@ -902,6 +923,7 @@ RULES:
 - Every BUY: stop, tp1, tp2, positionDollars (max $${walletState.cashBalance.toFixed(2)} total), shares. No entryPrice — system fetches live.
 - Max risk 1% of $${walletState.totalValue.toFixed(0)} per trade. Cite 2-3 indicator values per reasoning.
 - Keep response CONCISE. Max 3 opportunities. Short reasoning (2 sentences).
+- NEVER recommend the same ticker twice. Each ticker appears at most ONCE in opportunities.
 ${attributionRulesText}`;
 
   // ── ASSESS MODE: deep single-ticker analysis ──────────────────────────
@@ -1391,6 +1413,17 @@ Be constructive but unflinching. Every recommendation must be specific and imple
     earningsCount: wm.earningsCalendar?.length || 0,
     econEventsCount: wm.economicCalendar?.length || 0,
   };
+
+  // Deduplicate opportunities — keep highest-scored entry per ticker
+  if (analysis.opportunities && analysis.opportunities.length > 1) {
+    const best = {};
+    for (const opp of analysis.opportunities) {
+      const key = (opp.ticker || '').toUpperCase();
+      if (!key) continue;
+      if (!best[key] || (opp.score || 0) > (best[key].score || 0)) best[key] = opp;
+    }
+    analysis.opportunities = Object.values(best);
+  }
 
   // Auto-create Order Drafts for BUY opportunities with score ≥ 65
   // Skip tickers that already have open positions to prevent duplicates
