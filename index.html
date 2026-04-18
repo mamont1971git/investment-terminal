@@ -1049,7 +1049,14 @@ function AnalysisPanel(){
           body:JSON.stringify({phase:'ai',...dataResult,command:cmd}),
         });
         const d=await r2.json();
-        if(d.error)throw new Error(d.error);
+        if(d.error){
+          // Log error details for debugging
+          const detail=d._errorDetail?.[0];
+          const dbg=d._debug||{};
+          const errMsg=`${d.error} | stop=${detail?.stopReason} tokens=${detail?.tokensUsed}/${dbg.maxTokens} rawLen=${detail?.rawLength} model=${dbg.model}`;
+          console.error('Analysis error detail:', JSON.stringify(d,null,2));
+          throw new Error(errMsg);
+        }
         setResult(d);
       }
     }catch(e){setError(e.message);}

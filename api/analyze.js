@@ -587,15 +587,49 @@ module.exports = async (req, res) => {
       try {
         const message = await client.messages.create({ model: modelId, max_tokens: maxTokens, system: sysPrompt, messages: [{ role: 'user', content: context }] });
         const rawText = message.content[0].text;
+        const stopReason = message.stop_reason; // 'end_turn' or 'max_tokens'
+        const tokensUsed = message.usage?.output_tokens || 0;
         const clean = rawText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
-        try { return { parsed: JSON.parse(clean), raw: rawText, run: runNum }; }
-        catch(pe) { return { parsed: null, raw: rawText, run: runNum, parseError: pe.message }; }
+        try { return { parsed: JSON.parse(clean), raw: rawText, run: runNum, stopReason, tokensUsed }; }
+        catch(pe) {
+          // Try to repair truncated JSON (close open strings, brackets, braces)
+          let repaired = clean;
+          // Close any unterminated string
+          const quoteCount = (repaired.match(/(?<!\\)"/g) || []).length;
+          if (quoteCount % 2 !== 0) repaired += '"';
+          // Close open brackets/braces
+          const opens = (repaired.match(/[\[{]/g) || []).length;
+          const closes = (repaired.match(/[\]}]/g) || []).length;
+          for (let i = 0; i < opens - closes; i++) {
+            const lastOpen = Math.max(repaired.lastIndexOf('['), repaired.lastIndexOf('{'));
+            const lastOpenChar = repaired[lastOpen];
+            repaired += lastOpenChar === '[' ? ']' : '}';
+          }
+          // Remove trailing comma before closing
+          repaired = repaired.replace(/,\s*([}\]])/g, '$1');
+          try { return { parsed: JSON.parse(repaired), raw: rawText, run: runNum, stopReason, tokensUsed, repaired: true }; }
+          catch(pe2) { return { parsed: null, raw: rawText, run: runNum, parseError: pe.message, stopReason, tokensUsed }; }
+        }
       } catch(e) { return { parsed: null, raw: null, run: runNum, error: e.message }; }
     }
     const allRuns = await Promise.all(Array.from({ length: consistencyNAi }, (_, i) => aiCall(i + 1)));
     const successfulRuns = allRuns.filter(r => r.parsed);
     if (successfulRuns.length === 0) {
-      return res.status(500).json({ error: 'Claude call failed', runs: allRuns.map(r => r.error || r.parseError) });
+      // Log detailed error for debugging
+      const errorDetail = allRuns.map(r => ({
+        run: r.run,
+        error: r.error || r.parseError,
+        stopReason: r.stopReason,
+        tokensUsed: r.tokensUsed,
+        rawTail: r.raw ? r.raw.slice(-500) : null,
+        rawLength: r.raw ? r.raw.length : 0,
+      }));
+      return res.status(500).json({
+        error: 'Claude call failed',
+        runs: allRuns.map(r => r.error || r.parseError),
+        _errorDetail: errorDetail,
+        _debug: { model: modelId, maxTokens, mode: resolvedMode, contextLength: context.length, sysPromptLength: sysPrompt.length }
+      });
     }
     let analysis = successfulRuns[0].parsed;
     analysis._phase = 'ai';
