@@ -1146,18 +1146,25 @@ function AnalysisPanel({onPositionsUpdate}){
         };
         setResult(merged);
         // Merge analysis recommendations into position cards — single source of truth
+        console.log('[MERGE] positions:', merged.positions?.length, 'onPositionsUpdate:', !!onPositionsUpdate);
         if(merged.positions&&merged.positions.length>0&&onPositionsUpdate){
-          onPositionsUpdate(prev=>prev.map(p=>{
-            const ai=merged.positions.find(ap=>ap.ticker===p.ticker);
-            if(!ai)return p;
-            return{...p,
-              recommendation:ai.recommendation||p.recommendation,
-              right:ai.reasoning||p.right,
-              urgency:ai.urgency||p.urgency,
-              signalAttribution:ai.signalAttribution||p.signalAttribution,
-              _aiChecked:true,_fullAnalysis:true,
-            };
-          }));
+          const aiRecs=merged.positions.map(p=>({t:p.ticker,r:p.recommendation,u:p.urgency}));
+          console.log('[MERGE] Applying AI recommendations to position cards:', JSON.stringify(aiRecs));
+          onPositionsUpdate(prev=>{
+            const updated=prev.map(p=>{
+              const ai=merged.positions.find(ap=>ap.ticker===p.ticker);
+              if(!ai){console.log('[MERGE] No AI match for',p.ticker);return p;}
+              console.log('[MERGE]',p.ticker,': card was',p.recommendation,'→ now',ai.recommendation);
+              return{...p,
+                recommendation:ai.recommendation||p.recommendation,
+                right:ai.reasoning||p.right,
+                urgency:ai.urgency||p.urgency,
+                signalAttribution:ai.signalAttribution||p.signalAttribution,
+                _aiChecked:true,_fullAnalysis:true,
+              };
+            });
+            return updated;
+          });
         }
         // Sync minScore if tuning overrides changed it server-side
         const ems=oppData._effectiveMinScore||posData._effectiveMinScore;
