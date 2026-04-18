@@ -414,6 +414,7 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   const [closing,setClosing]=useState(null); // which action is in-flight
   const [closed,setClosed]=useState(false);
   const [closeResult,setCloseResult]=useState(null);
+  const [showAllActions,setShowAllActions]=useState(false);
 
   const handleClose=async(action,label)=>{
     if(!confirm(`${label} for ${t.ticker}?\n\nThis will close the position in Notion.`))return;
@@ -511,55 +512,154 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
         </div>
       </div>
 
-      {/* ═══════════ ACTIONS — right under ticker, most prominent ═══════════ */}
-      <div className="px-4 py-3"style={{background:'#080c16'}}>
-        <div className="grid grid-cols-2 gap-2">
-          <button onClick={()=>handleClose('take_profit_1',`Take Profit at TP1 ($${fmt(tp1)})`)}
-            disabled={!!closing}
-            className="flex flex-col items-center gap-0.5 px-3 py-3 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-            style={{background:'#0a1a0d',border:'1px solid #22c55e55'}}>
-            {closing==='take_profit_1'?<><Spin/><span style={{color:'#22c55e'}}>Closing…</span></>:<>
-              <span style={{color:'#22c55e',fontSize:'13px'}}>💰 TP1 @ ${fmt(tp1)}</span>
-              <span style={{color:'#4ade80',fontSize:'11px'}}>
-                {tp1Pct!=null&&`+${fmt(tp1Pct,1)}%`}{tp1Profit!=null&&` · +$${fmt(tp1Profit,0)}`}
-              </span>
-            </>}
-          </button>
-          <button onClick={()=>handleClose('take_profit_2',`Take Profit at TP2 ($${fmt(tp2)})`)}
-            disabled={!!closing}
-            className="flex flex-col items-center gap-0.5 px-3 py-3 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-            style={{background:'#0a1a0d',border:'1px solid #16a34a55'}}>
-            {closing==='take_profit_2'?<><Spin/><span style={{color:'#16a34a'}}>Closing…</span></>:<>
-              <span style={{color:'#16a34a',fontSize:'13px'}}>💰 TP2 @ ${fmt(tp2)}</span>
-              <span style={{color:'#22c55e',fontSize:'11px'}}>
-                {tp2Pct!=null&&`+${fmt(tp2Pct,1)}%`}{tp2Profit!=null&&` · +$${fmt(tp2Profit,0)}`}
-              </span>
-            </>}
-          </button>
-          <button onClick={()=>handleClose('exit_now','Exit Now at market price')}
-            disabled={!!closing}
-            className="flex flex-col items-center gap-0.5 px-3 py-3 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-            style={{background:'#1a0808',border:'1px solid #ef444455'}}>
-            {closing==='exit_now'?<><Spin/><span style={{color:'#ef4444'}}>Closing…</span></>:<>
-              <span style={{color:'#ef4444',fontSize:'13px'}}>🚨 Exit Now{t.currentPrice?` @ $${fmt(t.currentPrice)}`:''}</span>
-              <span style={{color:currentProfit!=null&&currentProfit>0?'#4ade80':'#f87171',fontSize:'11px'}}>
-                {currentProfit!=null?`${currentProfit>0?'+':''}$${fmt(currentProfit,0)}`:'at market'}
-              </span>
-            </>}
-          </button>
-          <button onClick={()=>handleClose('stopped_out',`Stopped Out @ $${fmt(t.stopLoss)}`)}
-            disabled={!!closing}
-            className="flex flex-col items-center gap-0.5 px-3 py-3 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-            style={{background:'#1a0c08',border:'1px solid #f59e0b55'}}>
-            {closing==='stopped_out'?<><Spin/><span style={{color:'#f59e0b'}}>Closing…</span></>:<>
-              <span style={{color:'#f59e0b',fontSize:'13px'}}>⛔ Stop @ ${fmt(t.stopLoss)}</span>
-              <span style={{color:'#f87171',fontSize:'11px'}}>
-                {stopPct!=null&&`${fmt(stopPct,1)}%`}{stopLossProfit!=null&&` · $${fmt(stopLossProfit,0)}`}
-              </span>
-            </>}
-          </button>
-        </div>
-      </div>
+      {/* ═══════════ SMART ACTION — contextual verdict ═══════════ */}
+      {(()=>{
+        const price=t.currentPrice;
+        const entry=t.entryPrice;
+        const stop=t.stopLoss;
+        const rec=t.recommendation; // HOLD, EXIT_NOW, TAKE_PROFIT, etc.
+
+        // ── compute distances as % from current price ──
+        const toTp1=price&&tp1?((tp1-price)/price*100):null;
+        const toTp2=price&&tp2?((tp2-price)/price*100):null;
+        const toStop=price&&stop?((price-stop)/price*100):null;
+        const aboveEntry=price&&entry?((price-entry)/entry*100):null;
+
+        // ── determine primary verdict ──
+        let verdict, verdictIcon, verdictColor, verdictBg, verdictBorder, verdictReason, primaryAction, primaryLabel;
+
+        if(!price||!entry){
+          // no price data
+          verdict='NO DATA';verdictIcon='⚠️';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
+          verdictReason='Price data unavailable — cannot determine action';
+          primaryAction=null;primaryLabel='';
+        } else if(price<=stop*1.005){
+          // at or below stop loss (within 0.5%)
+          verdict='EXIT — STOP HIT';verdictIcon='🚨';verdictColor='#ef4444';verdictBg='#1a0808';verdictBorder='#7f1d1d';
+          verdictReason=`Price $${fmt(price)} hit stop loss $${fmt(stop)}`;
+          primaryAction='stopped_out';primaryLabel=`Stopped Out @ $${fmt(stop)}`;
+        } else if(price>=tp2*0.995){
+          // at or above TP2 (within 0.5%)
+          verdict='TAKE PROFIT — TP2 HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
+          verdictReason=`Price $${fmt(price)} reached TP2 target $${fmt(tp2)} — lock in +${fmt(aboveEntry,1)}% gains`;
+          primaryAction='take_profit_2';primaryLabel=`Take Profit at TP2 ($${fmt(tp2)})`;
+        } else if(price>=tp1*0.995){
+          // at or above TP1 (within 0.5%)
+          verdict='TAKE PROFIT — TP1 HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
+          verdictReason=`Price $${fmt(price)} reached TP1 target $${fmt(tp1)} — consider taking profits (+${fmt(aboveEntry,1)}%)`;
+          primaryAction='take_profit_1';primaryLabel=`Take Profit at TP1 ($${fmt(tp1)})`;
+        } else if(rec==='EXIT_NOW'||rec==='SELL'){
+          // Claude says exit
+          verdict='EXIT RECOMMENDED';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+          verdictReason=`Analysis recommends exit — ${t.right?t.right.slice(0,80)+'…':'review analysis notes'}`;
+          primaryAction='exit_now';primaryLabel='Exit Now at market price';
+        } else if(rec==='TAKE_PROFIT'){
+          // Claude says take profit but price hasn't hit TP yet
+          verdict='TAKE PROFIT ADVISED';verdictIcon='💰';verdictColor='#4ade80';verdictBg='#0a1a0d';verdictBorder='#14532d';
+          verdictReason=`Analysis recommends taking profit at +${fmt(aboveEntry,1)}% — TP1 is ${fmt(toTp1,1)}% away`;
+          primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(price)}`;
+        } else if(toStop!=null&&toStop<3){
+          // danger zone — within 3% of stop
+          verdict='CAUTION — NEAR STOP';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+          verdictReason=`Only ${fmt(toStop,1)}% above stop loss ($${fmt(stop)}) — watch closely`;
+          primaryAction=null;primaryLabel='';
+        } else if(aboveEntry>=0){
+          // in profit, heading toward TP1
+          verdict='HOLD';verdictIcon='📊';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
+          verdictReason=`In profit +${fmt(aboveEntry,1)}% — ${fmt(toTp1,1)}% to TP1 ($${fmt(tp1)})`;
+          primaryAction=null;primaryLabel='';
+        } else {
+          // underwater but above stop
+          verdict='HOLD — UNDERWATER';verdictIcon='📊';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
+          verdictReason=`Down ${fmt(Math.abs(aboveEntry),1)}% — ${fmt(toStop,1)}% cushion to stop ($${fmt(stop)})`;
+          primaryAction=null;primaryLabel='';
+        }
+
+        const isPrimaryUrgent=!!primaryAction;
+
+        return(
+          <div className="px-4 py-3"style={{background:'#080c16'}}>
+            {/* ── VERDICT BANNER ── */}
+            <div className="rounded-xl px-4 py-3 mb-2"style={{background:verdictBg,border:`2px solid ${verdictBorder}`}}>
+              <div className="flex items-center gap-2 mb-1">
+                <span style={{fontSize:'18px'}}>{verdictIcon}</span>
+                <span className="font-black text-sm tracking-wide"style={{color:verdictColor}}>{verdict}</span>
+              </div>
+              <div className="text-xs leading-relaxed"style={{color:verdictColor+'cc'}}>{verdictReason}</div>
+            </div>
+
+            {/* ── PRIMARY ACTION BUTTON (if urgent) ── */}
+            {primaryAction&&(
+              <button onClick={()=>handleClose(primaryAction,primaryLabel)}
+                disabled={!!closing}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-black transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-40 mb-2"
+                style={{background:verdictColor+'22',border:`2px solid ${verdictColor}`,color:verdictColor}}>
+                {closing===primaryAction?<><Spin/><span>Closing…</span></>:<>
+                  <span>{verdictIcon}</span>
+                  <span>{primaryLabel}</span>
+                  {currentProfit!=null&&<span className="text-xs opacity-80">({currentProfit>0?'+':''}${fmt(currentProfit,0)})</span>}
+                </>}
+              </button>
+            )}
+
+            {/* ── SECONDARY ACTIONS (collapsed by default) ── */}
+            <button onClick={()=>setShowAllActions(v=>!v)}
+              className="w-full text-xs py-1 transition"style={{color:'#475569'}}>
+              {showAllActions?'▲ Hide other actions':'▼ Other actions'}
+            </button>
+            {showAllActions&&(
+              <div className="grid grid-cols-2 gap-2 mt-2 fade">
+                {primaryAction!=='take_profit_1'&&(
+                  <button onClick={()=>handleClose('take_profit_1',`Take Profit at TP1 ($${fmt(tp1)})`)}
+                    disabled={!!closing}
+                    className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
+                    style={{background:'#0a1a0d88',border:'1px solid #22c55e33',opacity:0.7}}>
+                    {closing==='take_profit_1'?<Spin/>:<>
+                      <span style={{color:'#22c55e',fontSize:'11px'}}>TP1 @ ${fmt(tp1)}</span>
+                      <span style={{color:'#4ade8088',fontSize:'10px'}}>{tp1Pct!=null&&`+${fmt(tp1Pct,1)}%`}</span>
+                    </>}
+                  </button>
+                )}
+                {primaryAction!=='take_profit_2'&&(
+                  <button onClick={()=>handleClose('take_profit_2',`Take Profit at TP2 ($${fmt(tp2)})`)}
+                    disabled={!!closing}
+                    className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
+                    style={{background:'#0a1a0d88',border:'1px solid #16a34a33',opacity:0.7}}>
+                    {closing==='take_profit_2'?<Spin/>:<>
+                      <span style={{color:'#16a34a',fontSize:'11px'}}>TP2 @ ${fmt(tp2)}</span>
+                      <span style={{color:'#22c55e88',fontSize:'10px'}}>{tp2Pct!=null&&`+${fmt(tp2Pct,1)}%`}</span>
+                    </>}
+                  </button>
+                )}
+                {primaryAction!=='exit_now'&&(
+                  <button onClick={()=>handleClose('exit_now','Exit Now at market price')}
+                    disabled={!!closing}
+                    className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
+                    style={{background:'#1a080888',border:'1px solid #ef444433',opacity:0.7}}>
+                    {closing==='exit_now'?<Spin/>:<>
+                      <span style={{color:'#ef4444',fontSize:'11px'}}>Exit Now{price?` @ $${fmt(price)}`:''}</span>
+                      <span style={{color:currentProfit!=null&&currentProfit>0?'#4ade8088':'#f8717188',fontSize:'10px'}}>
+                        {currentProfit!=null?`${currentProfit>0?'+':''}$${fmt(currentProfit,0)}`:'market'}
+                      </span>
+                    </>}
+                  </button>
+                )}
+                {primaryAction!=='stopped_out'&&(
+                  <button onClick={()=>handleClose('stopped_out',`Stopped Out @ $${fmt(t.stopLoss)}`)}
+                    disabled={!!closing}
+                    className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
+                    style={{background:'#1a0c0888',border:'1px solid #f59e0b33',opacity:0.7}}>
+                    {closing==='stopped_out'?<Spin/>:<>
+                      <span style={{color:'#f59e0b',fontSize:'11px'}}>Stop @ ${fmt(t.stopLoss)}</span>
+                      <span style={{color:'#f8717188',fontSize:'10px'}}>{stopPct!=null&&`${fmt(stopPct,1)}%`}</span>
+                    </>}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ═══════════ DETAILS — collapsible info section ═══════════ */}
       <div className="px-4 py-2">
