@@ -883,69 +883,25 @@ Respond with a JSON object (no markdown, pure JSON):
     "vix": number, "fg": number_or_null, "spyAbove": true/false
   },
   "positions": [
-    {
-      "ticker": "XXXX",
-      "recommendation": "HOLD|TAKE_PROFIT|EXIT_NOW|TIGHTEN_STOP",
-      "currentPrice": number_or_null,
-      "pnlPct": number_or_null,
-      "reasoning": "2-3 sentences: why this action, what changed, what to watch",
-      "urgency": "urgent|watch|ok",
-      "signalAttribution": [
-        {
-          "source": "Technical Analysis|Capitol Trades|Finviz Screener|CNN Fear & Greed|World Monitor|Earnings Calendar|Insider Activity|Sector Momentum",
-          "weight": number_0_to_100,
-          "signal": "what this source specifically says now (1 sentence)",
-          "verdict": "BULLISH|BEARISH|NEUTRAL"
-        }
-      ]
-    }
+    {"ticker":"XXXX","recommendation":"HOLD|TAKE_PROFIT|EXIT_NOW|TIGHTEN_STOP","currentPrice":number_or_null,"pnlPct":number_or_null,"reasoning":"1-2 sentences","urgency":"urgent|watch|ok",
+     "signalAttribution":[{"source":"source_name","weight":number,"signal":"brief","verdict":"BULLISH|BEARISH|NEUTRAL"}]}
   ],
   "opportunities": [
-    {
-      "ticker": "XXXX",
-      "score": number_0_to_100,
-      "action": "BUY|WATCHLIST",
-      "strategy": "Mean Reversion|Breakout Momentum|Earnings Catalyst",
-      "reasoning": "3-4 sentences explaining the setup and why now",
-      "entryPrice": number,
-      "stop": number, "tp1": number, "tp2": number,
-      "positionPct": number,
-      "positionDollars": number_dollar_amount_from_wallet,
-      "shares": number_of_shares_to_buy,
-      "waitingFor": "only for WATCHLIST — what needs to improve",
-      "signalAttribution": [
-        {
-          "source": "Technical Analysis|Capitol Trades|Finviz Screener|CNN Fear & Greed|World Monitor|Earnings Calendar|Insider Activity|Sector Momentum",
-          "weight": number_0_to_100,
-          "signal": "what this source specifically said (1 sentence)",
-          "verdict": "BULLISH|BEARISH|NEUTRAL"
-        }
-      ]
-    }
+    {"ticker":"XXXX","score":number,"action":"BUY|WATCHLIST","strategy":"Mean Reversion|Breakout Momentum|Earnings Catalyst","reasoning":"2-3 sentences","stop":number,"tp1":number,"tp2":number,"positionPct":number,"positionDollars":number,"shares":number,"waitingFor":"only if WATCHLIST",
+     "signalAttribution":[{"source":"source_name","weight":number,"signal":"brief","verdict":"BULLISH|BEARISH|NEUTRAL"}]}
   ],
-  "insights": "1-2 key portfolio observations from trade history",
-  "stance": "Aggressive|Moderate|Defensive",
-  "recommendedCash": "XX%",
-  "nextCheckIn": "time/date"
+  "insights":"1 key observation",
+  "stance":"Aggressive|Moderate|Defensive",
+  "recommendedCash":"XX%",
+  "nextCheckIn":"time"
 }
 
-CRITICAL RULES:
-- NEVER recommend BUY for tickers that are already in OPEN PAPER TRADES above. These tickers are ALREADY HELD: ${openTickers.length ? openTickers.join(', ') : 'none'}. Only recommend new tickers not in this list. Handle existing positions in the "positions" array with HOLD/TAKE_PROFIT/EXIT_NOW/TIGHTEN_STOP.
-- For "full analysis" or "run investment analysis": ONLY return BUY (score≥65) and WATCHLIST (score 50-64) in opportunities. Do NOT include SKIP entries — they waste space. Focus on actionable items only.
-- For "score" commands on a specific ticker: include the full verdict even if SKIP.
-- For "portfolio review": focus entirely on positions array with detailed actions. Opportunities array can be empty.
-- Every BUY must have stop, tp1, tp2, positionPct, positionDollars, shares. Calculate positionDollars from the wallet cash available ($${walletState.cashBalance.toFixed(2)}), then shares = positionDollars / estimated_price. Do NOT include entryPrice — the system will fetch the live price automatically. If you don't know the current price, still recommend the trade; the system handles pricing.
-- WALLET ENFORCEMENT: Total cost of ALL BUY recommendations in this response must NOT exceed available cash ($${walletState.cashBalance.toFixed(2)}). If insufficient cash, use WATCHLIST instead of BUY.
-- Every position must have a specific recommendation and reasoning. Never say "monitor" — say exactly what to do.
-- Be specific with price levels and percentages. The user needs exact numbers to act on.
-- USE THE COMPUTED TECHNICAL INDICATORS above — they are calculated from real OHLCV data. Refer to specific RSI, MACD, Bollinger, Z-Score, Fibonacci, OBV, volume ratio values in your reasoning.
-- Apply the 1% Rule: never risk more than 1% of total portfolio value ($${(walletState.totalValue * 0.01).toFixed(2)}) on any single trade. Use the computed 1% rule max shares as a guide.
-- Reference Fibonacci support/resistance levels for entry/exit targets when available.
-- If OBV shows bearish divergence (price up but volume not confirming), flag it as a warning.
-- Z-Score below -2 is a strong mean reversion signal; above +2 is overbought warning.
-- In your reasoning for each position/opportunity, cite at least 2-3 specific indicator values.
-
-SIGNAL ATTRIBUTION RULES:
+RULES:
+- Already held: ${openTickers.length ? openTickers.join(', ') : 'none'} — do NOT recommend BUY for these. Use positions array for HOLD/EXIT/TP.
+- BUY needs score≥65, WATCHLIST 50-64. Skip entries below 50.
+- Every BUY: stop, tp1, tp2, positionDollars (max $${walletState.cashBalance.toFixed(2)} total), shares. No entryPrice — system fetches live.
+- Max risk 1% of $${walletState.totalValue.toFixed(0)} per trade. Cite 2-3 indicator values per reasoning.
+- Keep response CONCISE. Max 3 opportunities. Short reasoning (2 sentences).
 ${attributionRulesText}`;
 
   // ── ASSESS MODE: deep single-ticker analysis ──────────────────────────
@@ -1183,7 +1139,7 @@ ADDITIONAL RULES:
       context,
       mode: isDiagnoseMode ? 'diagnose' : (isDiscoverMode ? 'discover' : (isAssessMode ? 'assess' : mode)),
       modelId: (isQuick && !isAssessMode && !isDiscoverMode && !isDiagnoseMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
-      maxTokens: isQuick ? 2048 : 4096,
+      maxTokens: isQuick ? 2048 : 3000,
       assessTicker: assessTicker || null,
       consistencyN,
       openTickers: openFormatted.map(t => t.ticker).filter(Boolean),
@@ -1243,7 +1199,7 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments + discovery + diagnose
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
   const modelId = (isQuick && !isAssessMode && !isDiscoverMode && !isDiagnoseMode) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
-  const maxTokens = isQuick ? 2048 : 4096;
+  const maxTokens = isQuick ? 2048 : 3000;
   const systemPrompt = isDiagnoseMode ? diagnoseSystemPrompt : (isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt)));
 
   // Run Claude call(s) — single for normal, PARALLEL for consistency mode
