@@ -482,16 +482,13 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   }
   const _earningsWarn=_earningsDays!=null?` Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}.`:(_hasEarnings?' Earnings approaching.':'');
 
-  // Price sanity check — flag if P&L >80% on position held <30 days
+  // Price sanity — if backend flagged the price as suspect, note it but still give a verdict
   const _daysHeld=t.daysHeld||0;
-  const _pnlSuspect=_aboveEntry!=null&&Math.abs(_aboveEntry)>80&&_daysHeld<30;
+  const _priceSuspect=t._priceValidated||(_aboveEntry!=null&&Math.abs(_aboveEntry)>80&&_daysHeld<30);
+  const _priceNote=_priceSuspect?' (price unverified — data may be stale)':'';
 
   let verdict,verdictIcon,verdictColor,verdictBg,verdictBorder,verdictReason,primaryAction,primaryLabel;
-  if(_pnlSuspect){
-    verdict='PRICE ERROR';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-    verdictReason=`P&L of ${_aboveEntry>0?'+':''}${fmt(_aboveEntry,1)}% in ${_daysHeld}d looks wrong. Verify price data before acting.`;
-    primaryAction=null;primaryLabel='';
-  } else if(!_price||!_entry){
+  if(!_price||!_entry){
     verdict='NO DATA';verdictIcon='⚠️';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
     verdictReason='Waiting for price data';primaryAction=null;primaryLabel='';
   } else if(_price<=_stop*1.005){
@@ -539,9 +536,12 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     primaryAction=null;primaryLabel='';
   }
 
+  // Append price note if data is suspect
+  if(_priceSuspect&&verdictReason)verdictReason+=_priceNote;
+
   // Verdict pill color for header
-  const verdictPillColor=verdict.startsWith('SELL')?'#ef4444':verdict.startsWith('WATCH')?'#f59e0b':verdict==='DO NOTHING'?'#60a5fa':verdict==='PRICE ERROR'?'#f59e0b':'#94a3b8';
-  const verdictPillText=verdict.startsWith('SELL NOW')?'SELL':verdict==='WATCH CLOSELY'?'WATCH':verdict==='DO NOTHING'?'HOLD':verdict==='PRICE ERROR'?'⚠️ CHECK':'—';
+  const verdictPillColor=verdict.startsWith('SELL')?'#ef4444':verdict.startsWith('WATCH')?'#f59e0b':verdict==='DO NOTHING'?'#60a5fa':'#94a3b8';
+  const verdictPillText=verdict.startsWith('SELL NOW')?'SELL':verdict==='WATCH CLOSELY'?'WATCH':verdict==='DO NOTHING'?'HOLD':'—';
 
   return(
     <div style={{borderTop:'1px solid #1e2d4a',background:'#0a0e1a'}}>
@@ -613,8 +613,7 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
         )}
 
         {/* ── SECONDARY ACTIONS (collapsed by default) ── */}
-        {verdict!=='PRICE ERROR'&&(
-          <>
+        <>
             <button onClick={()=>setShowAllActions(v=>!v)}
               className="w-full text-xs py-1 transition"style={{color:'#475569'}}>
               {showAllActions?'▲ Hide other actions':'▼ Other actions'}
@@ -670,7 +669,6 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
               </div>
             )}
           </>
-        )}
       </div>
 
       {/* ═══════════ DETAILS — collapsible info section ═══════════ */}
