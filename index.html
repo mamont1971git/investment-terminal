@@ -528,8 +528,20 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
         // ── determine primary verdict — direct, unambiguous ──
         let verdict, verdictIcon, verdictColor, verdictBg, verdictBorder, verdictReason, primaryAction, primaryLabel;
 
-        // earnings proximity check
-        const earningsNote=t.daysHeld!=null&&t.right&&/earnings|earning/i.test(t.right)?' (before earnings)':'';
+        // earnings detection — extract days until earnings from analysis notes
+        const earningsMatch=t.right&&t.right.match(/earnings?\s*(?:on|in|:)?\s*(\w+\s+\d+|\d+\s+days?)/i);
+        const hasEarningsConcern=!!(t.right&&/earnings?/i.test(t.right));
+        // try to extract days-to-earnings from notes like "earnings Apr 21" or "earnings in 3 days"
+        let earningsDays=null;
+        if(hasEarningsConcern&&earningsMatch){
+          const dMatch=earningsMatch[1].match(/(\d+)\s*days?/i);
+          if(dMatch) earningsDays=parseInt(dMatch[1]);
+          else {
+            // try parsing a date like "Apr 21"
+            try{const ed=new Date(earningsMatch[1]+' 2026');if(!isNaN(ed)){earningsDays=Math.max(0,Math.ceil((ed-new Date())/(86400000)));}}catch(e){}
+          }
+        }
+        const earningsWarn=earningsDays!=null?` Earnings in ${earningsDays} day${earningsDays!==1?'s':''}.`:(hasEarningsConcern?' Earnings approaching.':'');
 
         if(!price||!entry){
           verdict='NO DATA';verdictIcon='⚠️';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
@@ -541,24 +553,38 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
           primaryAction='stopped_out';primaryLabel=`Close @ $${fmt(stop)}`;
         } else if(price>=tp2*0.995){
           verdict='SELL NOW — TARGET HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
-          verdictReason=`TP2 reached. You're up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money${earningsNote}.`;
+          verdictReason=`TP2 reached. You're up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money.${earningsWarn}`;
           primaryAction='take_profit_2';primaryLabel=`Take Profit +$${fmt(currentProfit,0)}`;
         } else if(price>=tp1*0.995){
           verdict='SELL NOW — TARGET HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
-          verdictReason=`TP1 reached. You're up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money${earningsNote}.`;
+          verdictReason=`TP1 reached. You're up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money.${earningsWarn}`;
           primaryAction='take_profit_1';primaryLabel=`Take Profit +$${fmt(currentProfit,0)}`;
         } else if(rec==='EXIT_NOW'||rec==='SELL'){
           verdict='SELL NOW';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-          verdictReason=t.right?t.right.slice(0,100):'Exit signal triggered.';
+          verdictReason=t.right?t.right.slice(0,120):'Exit signal triggered.';
           primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)}`;
         } else if(rec==='TAKE_PROFIT'){
-          verdict='SELL NOW';verdictIcon='💰';verdictColor='#4ade80';verdictBg='#0a1a0d';verdictBorder='#14532d';
-          verdictReason=`Up +${fmt(aboveEntry,1)}%. Take profit now${earningsNote}.`;
-          primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)} (+$${fmt(currentProfit,0)})`;
+          // Claude says take profit but target not hit — show as WATCH CLOSELY, not SELL
+          if(hasEarningsConcern){
+            verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+            verdictReason=`Up +${fmt(aboveEntry,1)}% but target not reached.${earningsWarn} Decide before earnings.`;
+            primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)} (+$${fmt(currentProfit,0)})`;
+          } else {
+            verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+            verdictReason=`Up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Analysis suggests taking profit but target not hit. Watch for ${fmt(toTp1,1)}% more to TP1.`;
+            primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)} (+$${fmt(currentProfit,0)})`;
+          }
         } else if(toStop!=null&&toStop<3){
           verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-          verdictReason=`Only ${fmt(toStop,1)}% above your stop. Be ready to exit.`;
+          verdictReason=`Only ${fmt(toStop,1)}% above your stop. Be ready to exit.${earningsWarn}`;
           primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(price)}`;
+        } else if(hasEarningsConcern&&earningsDays!=null&&earningsDays<=3){
+          // close to earnings, even if holding fine — flag it
+          verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+          verdictReason=aboveEntry>=0
+            ?`Up +${fmt(aboveEntry,1)}%. Earnings in ${earningsDays} day${earningsDays!==1?'s':''}. Decide: lock in gains or hold through.`
+            :`Down ${fmt(Math.abs(aboveEntry),1)}%. Earnings in ${earningsDays} day${earningsDays!==1?'s':''}. Risk of further drop.`;
+          primaryAction=null;primaryLabel='';
         } else if(aboveEntry>=0){
           verdict='DO NOTHING';verdictIcon='✅';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
           verdictReason=toTp1!=null?`Up +${fmt(aboveEntry,1)}%. Target is ${fmt(toTp1,1)}% away. Let it run.`:`Up +${fmt(aboveEntry,1)}%. Let it run.`;
