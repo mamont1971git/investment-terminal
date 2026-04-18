@@ -532,6 +532,7 @@ module.exports = async (req, res) => {
         const openResult = await notionQueryDB(TRADE_DB,
           { or: [
             { property: 'Status', select: { equals: 'Open' } },
+            { property: 'Status', select: { equals: 'Paper' } },
             { property: 'Status', select: { equals: 'Draft' } },
           ]},
           undefined, TOKEN, 50
@@ -624,39 +625,29 @@ module.exports = async (req, res) => {
   const walletTransactions = (walletResult.results || []).map(formatWalletTx);
   const wallet = computeWalletState(walletTransactions);
 
-  // Fetch live prices for open trades (respect Alpha Vantage rate limit)
+  // Fetch live prices for open trades — parallel where possible (Finnhub: 60 calls/min)
   const uniqueTickers = [...new Set(openTrades.map(t => t.ticker).filter(Boolean))];
   const prices = {};
 
-  // Fetch OHLCV for TA indicators — no ticker limit (Finnhub: 60 calls/min)
+  // Fetch OHLCV + quote prices in parallel batches of 3
+  // Each ticker needs both OHLCV (for TA) and quote (for real-time price)
   const taData = {};
-  if (ALPHA && computeAll && uniqueTickers.length > 0) {
-    for (const ticker of uniqueTickers) {
-      try {
-        const bars = await fetchOHLCV(ticker, ALPHA);
-        if (bars && bars.length >= 30) taData[ticker] = computeAll(bars);
-      } catch {}
-      if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 250));
-    }
-    // Fetch price-only for any tickers where OHLCV failed
-    const remaining = uniqueTickers.filter(t => !taData[t]);
-    for (const ticker of remaining) {
-      prices[ticker] = await getPrice(ticker, ALPHA);
-      if (remaining.length > 1) await new Promise(r => setTimeout(r, 250));
-    }
-  } else if (ALPHA && uniqueTickers.length > 0) {
-    // No TA engine: just fetch prices for all
-    for (const ticker of uniqueTickers) {
-      prices[ticker] = await getPrice(ticker, ALPHA);
-      if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 250));
-    }
-  }
-
-  // Always fetch real-time quote prices for ALL tickers to cross-validate OHLCV
   const quotePrices = {};
-  for (const ticker of uniqueTickers) {
-    quotePrices[ticker] = await getPrice(ticker, ALPHA);
-    if (uniqueTickers.length > 1) await new Promise(r => setTimeout(r, 150));
+  if (ALPHA && uniqueTickers.length > 0) {
+    const batchSize = 3;
+    for (let i = 0; i < uniqueTickers.length; i += batchSize) {
+      const batch = uniqueTickers.slice(i, i + batchSize);
+      const promises = batch.flatMap(ticker => [
+        computeAll
+          ? fetchOHLCV(ticker, ALPHA).then(bars => {
+              if (bars && bars.length >= 30) taData[ticker] = computeAll(bars);
+            }).catch(() => {})
+          : Promise.resolve(),
+        getPrice(ticker, ALPHA).then(p => { quotePrices[ticker] = p; }).catch(() => {}),
+      ]);
+      await Promise.all(promises);
+      if (i + batchSize < uniqueTickers.length) await new Promise(r => setTimeout(r, 200));
+    }
   }
 
   // Enrich open trades with live data + TA
