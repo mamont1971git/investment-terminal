@@ -1385,7 +1385,14 @@ function DailyBrief(){
   const [live,setLive]=useState(null);
   const [status,setStatus]=useState('idle'); // idle | loading | done | failed
   const [ts,setTs]=useState(null);
-  const [bannerErrors,setBannerErrors]=useState(()=>load('inv_errors',[]));
+  const [bannerErrors,setBannerErrors]=useState(()=>{
+    const all=load('inv_errors',[]);
+    // Auto-expire errors older than 10 minutes
+    const cutoff=Date.now()-10*60*1000;
+    const fresh=all.filter(e=>e.ts&&e.ts>cutoff);
+    if(fresh.length!==all.length)save('inv_errors',fresh);
+    return fresh;
+  });
   const [manualVix,setManualVix]=useState('');
   const [manualFg,setManualFg]=useState('');
   const [spyTrend,setSpyTrend]=useState('above');
