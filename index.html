@@ -1778,7 +1778,7 @@ function DailyBrief(){
       {/* error banner — always on top */}
       <ErrorBanner
         errors={bannerErrors}
-        onDismiss={()=>setBannerErrors([])}
+        onDismiss={()=>{save('inv_errors',[]);setBannerErrors([]);}}
       />
 
       {/* header */}
