@@ -1220,7 +1220,7 @@ ADDITIONAL RULES:
       _phase: 'data',
       context,
       mode: isDiagnoseMode ? 'diagnose' : (isDiscoverMode ? 'discover' : (isAssessMode ? 'assess' : mode)),
-      modelId: 'claude-haiku-4-5-20251001',
+      modelId: isQuick ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
       maxTokens: isQuick ? 2048 : 8192,
       assessTicker: assessTicker || null,
       consistencyN,
@@ -1280,8 +1280,8 @@ Be constructive but unflinching. Every recommendation must be specific and imple
 
   // Call Claude API — Haiku for quick checks, Sonnet for deep analysis + assessments + discovery + diagnose
   const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
-  const modelId = 'claude-haiku-4-5-20251001';
-  const maxTokens = isQuick ? 2048 : 4096;
+  const modelId = isQuick ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
+  const maxTokens = isQuick ? 2048 : 8192;
   const systemPrompt = isDiagnoseMode ? diagnoseSystemPrompt : (isDiscoverMode ? discoverSystemPrompt : (isAssessMode ? assessSystemPrompt : (isQuick ? quickSystemPrompt : fullSystemPrompt)));
 
   // Run Claude call(s) — single for normal, PARALLEL for consistency mode
