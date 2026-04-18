@@ -1972,6 +1972,21 @@ function DailyBrief(){
                   style={{background:'#3b82f618',color:'#60a5fa',border:'1px solid #3b82f633'}}>
                   ↻ Refresh
                 </button>
+                <button onClick={async(e)=>{
+                  if(!confirm('Delete ALL open positions and drafts? This cannot be undone.'))return;
+                  const btn=e.currentTarget;btn.disabled=true;btn.textContent='🗑️ Deleting…';
+                  try{
+                    const r=await fetch('/api/get-positions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'purge_positions'})});
+                    const d=await r.json();
+                    if(d.ok){btn.textContent=`✓ Deleted ${d.archived}`;fetchPositions();}
+                    else{btn.textContent='❌ Failed';}
+                  }catch(err){btn.textContent='❌ '+err.message;}
+                  finally{setTimeout(()=>{btn.textContent='🗑️ Purge';btn.disabled=false;},3000);}
+                }}
+                  className="px-2 py-0.5 rounded-lg text-xs font-semibold transition-all hover:scale-105"
+                  style={{background:'#ef444418',color:'#f87171',border:'1px solid #ef444433'}}>
+                  🗑️ Purge
+                </button>
               </div>
             </div>
             {positions.map(t=>{
