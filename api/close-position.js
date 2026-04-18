@@ -53,7 +53,7 @@ module.exports = async (req, res) => {
   let t;
   try { t = JSON.parse(body); } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
 
-  const { notionId, action, ticker, entryPrice } = t;
+  const { notionId, action, ticker, entryPrice, decisionReason, decisionRule } = t;
   if (!notionId) return res.status(400).json({ error: 'notionId required' });
 
   const today = new Date().toISOString().split('T')[0];
@@ -98,6 +98,13 @@ module.exports = async (req, res) => {
   if (currentPrice) props['Exit Price'] = { number: currentPrice };
   if (pnlPct !== null) props['P&L %'] = { number: pnlPct };
   if (daysHeld !== null) props['Days Held'] = { number: daysHeld };
+
+  // Record the system's decision reasoning — full audit trail
+  if (decisionReason) {
+    props['What Went Right'] = {
+      rich_text: [{ text: { content: `SYSTEM DECISION (${today}): ${decisionReason}`.slice(0, 2000) } }]
+    };
+  }
 
   // Update title to show closed status
   const emoji = pnlPct > 0 ? '✅' : '❌';

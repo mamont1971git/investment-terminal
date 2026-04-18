@@ -425,7 +425,9 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
       try{
         const r=await fetch('/api/get-positions',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({action:'update_stop',notionId:t.id,ticker:t.ticker,newStop})
+          body:JSON.stringify({action:'update_stop',notionId:t.id,ticker:t.ticker,newStop,
+            decisionReason:`[${verdict}] ${verdictReason}`,
+            decisionRule:verdict,decisionDate:new Date().toISOString()})
         });
         const d=await r.json();
         if(d.ok){
@@ -445,7 +447,9 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
           notionId:t.id,action,ticker:t.ticker,
-          entryPrice:t.entryPrice,dateOpened:t.dateOpened,strategy:t.strategy
+          entryPrice:t.entryPrice,dateOpened:t.dateOpened,strategy:t.strategy,
+          decisionReason:`[${verdict}] ${verdictReason}`,
+          decisionRule:verdict,decisionDate:new Date().toISOString()
         })
       });
       const d=await r.json();

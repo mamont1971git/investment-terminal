@@ -364,12 +364,16 @@ module.exports = async (req, res) => {
 
     // Route: update stop-loss price on an open position (tighten to breakeven)
     if (parsed.action === 'update_stop') {
-      const { notionId, newStop, ticker } = parsed;
+      const { notionId, newStop, ticker, decisionReason, decisionRule } = parsed;
       if (!notionId || newStop == null) return res.status(400).json({ error: 'notionId and newStop required' });
+      const today = new Date().toISOString().split('T')[0];
+      const reasonText = decisionReason
+        ? `SYSTEM DECISION (${today}): Stop tightened to $${Number(newStop).toFixed(2)}. ${decisionReason}`
+        : `Stop tightened to breakeven ($${Number(newStop).toFixed(2)}) on ${today} — system auto-recommendation`;
       const body = JSON.stringify({
         properties: {
           'Stop-Loss Price': { number: Number(newStop) },
-          'What Went Right': { rich_text: [{ text: { content: `Stop tightened to breakeven ($${Number(newStop).toFixed(2)}) on ${new Date().toISOString().split('T')[0]} — system auto-recommendation` } }] },
+          'What Went Right': { rich_text: [{ text: { content: reasonText.slice(0, 2000) } }] },
         }
       });
       return new Promise(resolve => {
