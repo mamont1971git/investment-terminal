@@ -525,53 +525,47 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
         const toStop=price&&stop?((price-stop)/price*100):null;
         const aboveEntry=price&&entry?((price-entry)/entry*100):null;
 
-        // ── determine primary verdict ──
+        // ── determine primary verdict — direct, unambiguous ──
         let verdict, verdictIcon, verdictColor, verdictBg, verdictBorder, verdictReason, primaryAction, primaryLabel;
 
+        // earnings proximity check
+        const earningsNote=t.daysHeld!=null&&t.right&&/earnings|earning/i.test(t.right)?' (before earnings)':'';
+
         if(!price||!entry){
-          // no price data
           verdict='NO DATA';verdictIcon='⚠️';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
-          verdictReason='Price data unavailable — cannot determine action';
+          verdictReason='Waiting for price data';
           primaryAction=null;primaryLabel='';
         } else if(price<=stop*1.005){
-          // at or below stop loss (within 0.5%)
-          verdict='EXIT — STOP HIT';verdictIcon='🚨';verdictColor='#ef4444';verdictBg='#1a0808';verdictBorder='#7f1d1d';
-          verdictReason=`Price $${fmt(price)} hit stop loss $${fmt(stop)}`;
-          primaryAction='stopped_out';primaryLabel=`Stopped Out @ $${fmt(stop)}`;
+          verdict='SELL NOW';verdictIcon='🚨';verdictColor='#ef4444';verdictBg='#1a0808';verdictBorder='#7f1d1d';
+          verdictReason=`Stop loss hit. Close this position now.`;
+          primaryAction='stopped_out';primaryLabel=`Close @ $${fmt(stop)}`;
         } else if(price>=tp2*0.995){
-          // at or above TP2 (within 0.5%)
-          verdict='TAKE PROFIT — TP2 HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
-          verdictReason=`Price $${fmt(price)} reached TP2 target $${fmt(tp2)} — lock in +${fmt(aboveEntry,1)}% gains`;
-          primaryAction='take_profit_2';primaryLabel=`Take Profit at TP2 ($${fmt(tp2)})`;
+          verdict='SELL NOW — TARGET HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
+          verdictReason=`TP2 reached. You're up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money${earningsNote}.`;
+          primaryAction='take_profit_2';primaryLabel=`Take Profit +$${fmt(currentProfit,0)}`;
         } else if(price>=tp1*0.995){
-          // at or above TP1 (within 0.5%)
-          verdict='TAKE PROFIT — TP1 HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
-          verdictReason=`Price $${fmt(price)} reached TP1 target $${fmt(tp1)} — consider taking profits (+${fmt(aboveEntry,1)}%)`;
-          primaryAction='take_profit_1';primaryLabel=`Take Profit at TP1 ($${fmt(tp1)})`;
+          verdict='SELL NOW — TARGET HIT';verdictIcon='💰';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
+          verdictReason=`TP1 reached. You're up +${fmt(aboveEntry,1)}% (+$${fmt(currentProfit,0)}). Take the money${earningsNote}.`;
+          primaryAction='take_profit_1';primaryLabel=`Take Profit +$${fmt(currentProfit,0)}`;
         } else if(rec==='EXIT_NOW'||rec==='SELL'){
-          // Claude says exit
-          verdict='EXIT RECOMMENDED';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-          verdictReason=`Analysis recommends exit — ${t.right?t.right.slice(0,80)+'…':'review analysis notes'}`;
-          primaryAction='exit_now';primaryLabel='Exit Now at market price';
+          verdict='SELL NOW';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+          verdictReason=t.right?t.right.slice(0,100):'Exit signal triggered.';
+          primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)}`;
         } else if(rec==='TAKE_PROFIT'){
-          // Claude says take profit but price hasn't hit TP yet
-          verdict='TAKE PROFIT ADVISED';verdictIcon='💰';verdictColor='#4ade80';verdictBg='#0a1a0d';verdictBorder='#14532d';
-          verdictReason=`Analysis recommends taking profit at +${fmt(aboveEntry,1)}% — TP1 is ${fmt(toTp1,1)}% away`;
-          primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(price)}`;
+          verdict='SELL NOW';verdictIcon='💰';verdictColor='#4ade80';verdictBg='#0a1a0d';verdictBorder='#14532d';
+          verdictReason=`Up +${fmt(aboveEntry,1)}%. Take profit now${earningsNote}.`;
+          primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(price)} (+$${fmt(currentProfit,0)})`;
         } else if(toStop!=null&&toStop<3){
-          // danger zone — within 3% of stop
-          verdict='CAUTION — NEAR STOP';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-          verdictReason=`Only ${fmt(toStop,1)}% above stop loss ($${fmt(stop)}) — watch closely`;
-          primaryAction=null;primaryLabel='';
+          verdict='WATCH CLOSELY';verdictIcon='⚠️';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+          verdictReason=`Only ${fmt(toStop,1)}% above your stop. Be ready to exit.`;
+          primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(price)}`;
         } else if(aboveEntry>=0){
-          // in profit, heading toward TP1
-          verdict='HOLD';verdictIcon='📊';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
-          verdictReason=toTp1!=null?`In profit +${fmt(aboveEntry,1)}% — ${fmt(toTp1,1)}% to TP1 ($${fmt(tp1)})`:`In profit +${fmt(aboveEntry,1)}%`;
+          verdict='DO NOTHING';verdictIcon='✅';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
+          verdictReason=toTp1!=null?`Up +${fmt(aboveEntry,1)}%. Target is ${fmt(toTp1,1)}% away. Let it run.`:`Up +${fmt(aboveEntry,1)}%. Let it run.`;
           primaryAction=null;primaryLabel='';
         } else {
-          // underwater but above stop
-          verdict='HOLD — UNDERWATER';verdictIcon='📊';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
-          verdictReason=toStop!=null?`Down ${fmt(Math.abs(aboveEntry),1)}% — ${fmt(toStop,1)}% cushion to stop ($${fmt(stop)})`:`Down ${fmt(Math.abs(aboveEntry),1)}% from entry`;
+          verdict='DO NOTHING';verdictIcon='📊';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
+          verdictReason=toStop!=null?`Down ${fmt(Math.abs(aboveEntry),1)}% but ${fmt(toStop,1)}% above stop. No action needed.`:`Down ${fmt(Math.abs(aboveEntry),1)}%. No action needed.`;
           primaryAction=null;primaryLabel='';
         }
 
