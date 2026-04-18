@@ -1085,6 +1085,19 @@ function AnalysisPanel(){
         const d=await r.json();
         if(d.error)throw new Error(d.error);
         setResult(d);
+        // Merge quick check into position cards too
+        if(d.positions&&d.positions.length>0){
+          setPositions(prev=>prev.map(p=>{
+            const ai=d.positions.find(ap=>ap.ticker===p.ticker);
+            if(!ai)return p;
+            return{...p,
+              recommendation:ai.recommendation||p.recommendation,
+              right:ai.reasoning||p.right,
+              urgency:ai.urgency||p.urgency,
+              _aiChecked:true,
+            };
+          }));
+        }
       }else if(mode==='full'){
         // Split analysis: data fetch → parallel Haiku (positions) + Sonnet (opportunities)
         const r1=await fetch('/api/analyze',{
@@ -1132,6 +1145,20 @@ function AnalysisPanel(){
           _phase: 'ai',
         };
         setResult(merged);
+        // Merge analysis recommendations into position cards — single source of truth
+        if(merged.positions&&merged.positions.length>0){
+          setPositions(prev=>prev.map(p=>{
+            const ai=merged.positions.find(ap=>ap.ticker===p.ticker);
+            if(!ai)return p;
+            return{...p,
+              recommendation:ai.recommendation||p.recommendation,
+              right:ai.reasoning||p.right,
+              urgency:ai.urgency||p.urgency,
+              signalAttribution:ai.signalAttribution||p.signalAttribution,
+              _aiChecked:true,_fullAnalysis:true,
+            };
+          }));
+        }
         // Sync minScore if tuning overrides changed it server-side
         const ems=oppData._effectiveMinScore||posData._effectiveMinScore;
         if(ems&&ems!==minScore)updateMinScore(ems);
@@ -1156,6 +1183,20 @@ function AnalysisPanel(){
           throw new Error(errMsg);
         }
         setResult(d);
+        // Merge analysis recommendations into position cards
+        if(d.positions&&d.positions.length>0){
+          setPositions(prev=>prev.map(p=>{
+            const ai=d.positions.find(ap=>ap.ticker===p.ticker);
+            if(!ai)return p;
+            return{...p,
+              recommendation:ai.recommendation||p.recommendation,
+              right:ai.reasoning||p.right,
+              urgency:ai.urgency||p.urgency,
+              signalAttribution:ai.signalAttribution||p.signalAttribution,
+              _aiChecked:true,_fullAnalysis:true,
+            };
+          }));
+        }
         if(d._effectiveMinScore&&d._effectiveMinScore!==minScore)updateMinScore(d._effectiveMinScore);
       }
     }catch(e){setError(e.message);}
