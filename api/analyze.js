@@ -1037,7 +1037,12 @@ RULES:
       sourceOverrideText = `\nUSER WEIGHT OVERRIDES (apply these multipliers when assigning signalAttribution weights — e.g. if a source normally gets 15% and has 1.5× override, give it ~22%): ${parts.join(', ')}. After applying multipliers, normalize so weights still sum to 100.`;
     }
   }
-  const attributionRulesText = `- Include "signalAttribution" array with 7 sources: "Technical Analysis", "CNN Fear & Greed", "Capitol Trades", "Finviz Screener", "Earnings Calendar", "Sector Momentum", "World Monitor". Each: {source, weight(0-100, sum=100), signal(1 sentence), verdict(BULLISH/BEARISH|NEUTRAL/NO_DATA)}. NO_DATA sources get weight 0.${sourceOverrideText}`;
+  const attributionRulesText = `- Include "signalAttribution" array with ALL 7 sources: "Technical Analysis", "CNN Fear & Greed", "Capitol Trades", "Finviz Screener", "Earnings Calendar", "Sector Momentum", "World Monitor". Each: {source, weight(0-100, sum=100), signal(1 sentence), verdict(BULLISH/BEARISH/NEUTRAL/NO_DATA)}.
+CRITICAL WEIGHT RULES:
+- Use NO_DATA (weight 0) ONLY when the data source itself failed to load or is completely unavailable.
+- If a source was checked but found no specific signal for this ticker, use verdict NEUTRAL with a small weight (3-8%) and explain what was checked (e.g. "Capitol Trades: No congressional activity for this ticker in recent filings" = NEUTRAL with weight 5, NOT NO_DATA).
+- "No signal found" ≠ NO_DATA. Absence of activity IS information. Only a broken/missing data feed = NO_DATA.
+- Every source that was successfully fetched MUST get weight > 0, even if the signal is weak or neutral.${sourceOverrideText}`;
 
   const fullContext = `${marketHeader}
 
