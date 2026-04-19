@@ -1093,20 +1093,8 @@ function AnalysisPanel({onPositionsUpdate}){
   const [minScore,setMinScore]=useState(()=>load('inv_minScore',65));
   const updateMinScore=(v)=>{const n=Math.max(0,Math.min(100,Number(v)||65));setMinScore(n);save('inv_minScore',n);};
 
-  // Signal source weight overrides: multiplier per source (default 1.0 = no change)
-  const adjustSourceWeight=(source,delta)=>{
-    setSourceOverrides(prev=>{
-      const cur=prev[source]||1.0;
-      const next=Math.max(0.25,Math.min(3.0,+(cur+delta).toFixed(2)));
-      const updated={...prev,[source]:next};
-      // Remove entries at default (1.0) to keep clean
-      if(next===1.0) delete updated[source];
-      save('inv_sourceOverrides',updated);
-      return updated;
-    });
-  };
-  const resetSourceOverrides=()=>{setSourceOverrides({});save('inv_sourceOverrides',{});};
-  const hasSourceOverrides=Object.keys(sourceOverrides).length>0;
+  // Read source overrides from localStorage for analysis requests
+  const getSourceOverrides=()=>{const so=load('inv_sourceOverrides',{});return Object.keys(so).length>0?so:null;};
 
   const run=async(cmd,mode='full')=>{
     if(window.location.protocol==='file:'){
@@ -1119,7 +1107,7 @@ function AnalysisPanel({onPositionsUpdate}){
         // Quick mode: single call (Haiku is fast enough)
         const r=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode,minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
+          body:JSON.stringify({command:cmd,mode,minScore,sourceOverrides:getSourceOverrides()}),
         });
         const d=await r.json();
         if(d.error)throw new Error(d.error);
@@ -1141,7 +1129,7 @@ function AnalysisPanel({onPositionsUpdate}){
         // Split analysis: data fetch → parallel Haiku (positions) + Sonnet (opportunities)
         const r1=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode,phase:'data',minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
+          body:JSON.stringify({command:cmd,mode,phase:'data',minScore,sourceOverrides:getSourceOverrides()}),
         });
         const dataResult=await r1.json();
         if(dataResult.error)throw new Error(dataResult.error);
@@ -1149,11 +1137,11 @@ function AnalysisPanel({onPositionsUpdate}){
         const [posRes, oppRes] = await Promise.all([
           fetch('/api/analyze',{
             method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'positions',modelId:'claude-haiku-4-5-20251001',maxTokens:8192,minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
+            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'positions',modelId:'claude-haiku-4-5-20251001',maxTokens:8192,minScore,sourceOverrides:getSourceOverrides()}),
           }),
           fetch('/api/analyze',{
             method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'opportunities',modelId:'claude-sonnet-4-6',maxTokens:8192,minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
+            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'opportunities',modelId:'claude-sonnet-4-6',maxTokens:8192,minScore,sourceOverrides:getSourceOverrides()}),
           }),
         ]);
         const posData=await posRes.json();
@@ -1224,13 +1212,13 @@ function AnalysisPanel({onPositionsUpdate}){
         // Other modes (assess, discover, diagnose): single Sonnet call
         const r1=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode,phase:'data',minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
+          body:JSON.stringify({command:cmd,mode,phase:'data',minScore,sourceOverrides:getSourceOverrides()}),
         });
         const dataResult=await r1.json();
         if(dataResult.error)throw new Error(dataResult.error);
         const r2=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({phase:'ai',...dataResult,command:cmd,minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
+          body:JSON.stringify({phase:'ai',...dataResult,command:cmd,minScore,sourceOverrides:getSourceOverrides()}),
         });
         const d=await r2.json();
         if(d.error){
@@ -1662,6 +1650,18 @@ function DailyBrief(){
   const [wallet,setWallet]=useState(null);
   const [sourceWeights,setSourceWeights]=useState(null);
   const [sourceOverrides,setSourceOverrides]=useState(()=>load('inv_sourceOverrides',{}));
+  const adjustSourceWeight=(source,delta)=>{
+    setSourceOverrides(prev=>{
+      const cur=prev[source]||1.0;
+      const next=Math.max(0.25,Math.min(3.0,+(cur+delta).toFixed(2)));
+      const updated={...prev,[source]:next};
+      if(next===1.0) delete updated[source];
+      save('inv_sourceOverrides',updated);
+      return updated;
+    });
+  };
+  const resetSourceOverrides=()=>{setSourceOverrides({});save('inv_sourceOverrides',{});};
+  const hasAppSourceOverrides=Object.keys(sourceOverrides).length>0;
   const [portfolioMetrics,setPortfolioMetrics]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [posStatus,setPosStatus]=useState('idle'); // idle | loading | done | failed
@@ -2444,9 +2444,9 @@ function DailyBrief(){
             <div className="px-4 py-3"style={{borderBottom:'1px solid #0f1828'}}>
               <div className="text-xs text-gray-500 mb-2 font-semibold flex items-center justify-between">
                 <span>Signal Source Rankings <span className="text-gray-600">(MWU)</span>
-                  {hasSourceOverrides&&<span className="ml-2 text-yellow-500">⚙️ overrides active</span>}
+                  {hasAppSourceOverrides&&<span className="ml-2 text-yellow-500">⚙️ overrides active</span>}
                 </span>
-                {hasSourceOverrides&&(
+                {hasAppSourceOverrides&&(
                   <button onClick={resetSourceOverrides} className="text-gray-600 hover:text-gray-400 underline"
                     style={{fontSize:'10px'}}>Reset all</button>
                 )}
