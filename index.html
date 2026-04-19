@@ -937,18 +937,20 @@ function TickerAssess(){
     const t=ticker.trim().toUpperCase();
     if(!t)return;
     const minScore=load('inv_minScore',65);
+    const so=load('inv_sourceOverrides',{});
+    const hasSO=Object.keys(so).length>0;
     setLoading(true);setError(null);setResult(null);
     try{
       // Two-phase: data fetch → AI analysis
       const r1=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ticker:t,thesis:thesis.trim()||undefined,command:`score ${t}`,mode:'full',phase:'data',minScore}),
+        body:JSON.stringify({ticker:t,thesis:thesis.trim()||undefined,command:`score ${t}`,mode:'full',phase:'data',minScore,sourceOverrides:hasSO?so:undefined}),
       });
       const dataResult=await r1.json();
       if(dataResult.error){setError(dataResult.error);return;}
       const r2=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({phase:'ai',...dataResult,command:`score ${t}`,minScore}),
+        body:JSON.stringify({phase:'ai',...dataResult,command:`score ${t}`,minScore,sourceOverrides:hasSO?so:undefined}),
       });
       const d=await r2.json();
       if(d.error){setError(d.error);return;}
@@ -1091,6 +1093,21 @@ function AnalysisPanel({onPositionsUpdate}){
   const [minScore,setMinScore]=useState(()=>load('inv_minScore',65));
   const updateMinScore=(v)=>{const n=Math.max(0,Math.min(100,Number(v)||65));setMinScore(n);save('inv_minScore',n);};
 
+  // Signal source weight overrides: multiplier per source (default 1.0 = no change)
+  const adjustSourceWeight=(source,delta)=>{
+    setSourceOverrides(prev=>{
+      const cur=prev[source]||1.0;
+      const next=Math.max(0.25,Math.min(3.0,+(cur+delta).toFixed(2)));
+      const updated={...prev,[source]:next};
+      // Remove entries at default (1.0) to keep clean
+      if(next===1.0) delete updated[source];
+      save('inv_sourceOverrides',updated);
+      return updated;
+    });
+  };
+  const resetSourceOverrides=()=>{setSourceOverrides({});save('inv_sourceOverrides',{});};
+  const hasSourceOverrides=Object.keys(sourceOverrides).length>0;
+
   const run=async(cmd,mode='full')=>{
     if(window.location.protocol==='file:'){
       setError('Live analysis requires the hosted app. Open investment-terminal-tawny.vercel.app');
@@ -1102,7 +1119,7 @@ function AnalysisPanel({onPositionsUpdate}){
         // Quick mode: single call (Haiku is fast enough)
         const r=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode,minScore}),
+          body:JSON.stringify({command:cmd,mode,minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
         });
         const d=await r.json();
         if(d.error)throw new Error(d.error);
@@ -1124,7 +1141,7 @@ function AnalysisPanel({onPositionsUpdate}){
         // Split analysis: data fetch → parallel Haiku (positions) + Sonnet (opportunities)
         const r1=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode,phase:'data',minScore}),
+          body:JSON.stringify({command:cmd,mode,phase:'data',minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
         });
         const dataResult=await r1.json();
         if(dataResult.error)throw new Error(dataResult.error);
@@ -1132,11 +1149,11 @@ function AnalysisPanel({onPositionsUpdate}){
         const [posRes, oppRes] = await Promise.all([
           fetch('/api/analyze',{
             method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'positions',modelId:'claude-haiku-4-5-20251001',maxTokens:8192,minScore}),
+            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'positions',modelId:'claude-haiku-4-5-20251001',maxTokens:8192,minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
           }),
           fetch('/api/analyze',{
             method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'opportunities',modelId:'claude-sonnet-4-6',maxTokens:8192,minScore}),
+            body:JSON.stringify({phase:'ai',...dataResult,command:cmd,splitRole:'opportunities',modelId:'claude-sonnet-4-6',maxTokens:8192,minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
           }),
         ]);
         const posData=await posRes.json();
@@ -1207,13 +1224,13 @@ function AnalysisPanel({onPositionsUpdate}){
         // Other modes (assess, discover, diagnose): single Sonnet call
         const r1=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({command:cmd,mode,phase:'data',minScore}),
+          body:JSON.stringify({command:cmd,mode,phase:'data',minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
         });
         const dataResult=await r1.json();
         if(dataResult.error)throw new Error(dataResult.error);
         const r2=await fetch('/api/analyze',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({phase:'ai',...dataResult,command:cmd,minScore}),
+          body:JSON.stringify({phase:'ai',...dataResult,command:cmd,minScore,sourceOverrides:hasSourceOverrides?sourceOverrides:undefined}),
         });
         const d=await r2.json();
         if(d.error){
@@ -1644,6 +1661,7 @@ function DailyBrief(){
   const [stats,setStats]=useState(null);
   const [wallet,setWallet]=useState(null);
   const [sourceWeights,setSourceWeights]=useState(null);
+  const [sourceOverrides,setSourceOverrides]=useState(()=>load('inv_sourceOverrides',{}));
   const [portfolioMetrics,setPortfolioMetrics]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [posStatus,setPosStatus]=useState('idle'); // idle | loading | done | failed
@@ -2421,28 +2439,52 @@ function DailyBrief(){
             </div>
           )}
 
-          {/* Signal source rankings */}
+          {/* Signal source rankings with override controls */}
           {sourceWeights&&sourceWeights.ranked&&sourceWeights.ranked.some(s=>s.totalTrades>0)&&(
             <div className="px-4 py-3"style={{borderBottom:'1px solid #0f1828'}}>
-              <div className="text-xs text-gray-500 mb-2 font-semibold">
-                Signal Source Rankings <span className="text-gray-600">(Multiplicative Weights Algorithm)</span>
+              <div className="text-xs text-gray-500 mb-2 font-semibold flex items-center justify-between">
+                <span>Signal Source Rankings <span className="text-gray-600">(MWU)</span>
+                  {hasSourceOverrides&&<span className="ml-2 text-yellow-500">⚙️ overrides active</span>}
+                </span>
+                {hasSourceOverrides&&(
+                  <button onClick={resetSourceOverrides} className="text-gray-600 hover:text-gray-400 underline"
+                    style={{fontSize:'10px'}}>Reset all</button>
+                )}
               </div>
               <div className="space-y-2">
                 {sourceWeights.ranked.filter(s=>s.totalTrades>0).map((s,i)=>{
                   const barColor=s.winRate>=60?'#22c55e':s.winRate>=45?'#f59e0b':'#ef4444';
                   const confDot=s.confidence==='high'?'#22c55e':s.confidence==='medium'?'#f59e0b':'#94a3b8';
+                  const mult=sourceOverrides[s.source]||1.0;
+                  const isOverridden=mult!==1.0;
+                  const effectiveWeight=+(s.weight*mult).toFixed(1);
                   return(
-                    <div key={i} className="flex items-center gap-2 text-xs">
+                    <div key={i} className="flex items-center gap-1 text-xs">
                       <span className="w-5 text-right font-bold text-gray-600">#{s.rank}</span>
-                      <span className="w-32 truncate font-semibold text-gray-300">{s.source}</span>
+                      <span className="w-28 truncate font-semibold"style={{color:isOverridden?'#f59e0b':'#d1d5db'}}
+                        title={isOverridden?`Override: ${mult}× (base ${s.weight}%)`:''}>{s.source}</span>
                       <div className="flex-1 h-2 rounded-full overflow-hidden"style={{background:'#1e2d4a'}}>
-                        <div className="h-full rounded-full transition-all"style={{width:`${s.weight}%`,background:barColor}}/>
+                        <div className="h-full rounded-full transition-all"style={{width:`${Math.min(effectiveWeight,100)}%`,background:isOverridden?'#f59e0b':barColor}}/>
                       </div>
-                      <span className="w-12 text-right font-bold"style={{color:barColor}}>{s.weight}%</span>
-                      <span className="w-16 text-right text-gray-500">{s.winRate}% W/R</span>
-                      <span className="w-12 text-right text-gray-600">{s.wins}W/{s.losses}L</span>
+                      <span className="w-12 text-right font-bold"style={{color:isOverridden?'#f59e0b':barColor}}>
+                        {isOverridden?effectiveWeight:s.weight}%
+                      </span>
+                      <span className="w-14 text-right text-gray-500">{s.winRate}% W/R</span>
+                      <span className="w-10 text-right text-gray-600">{s.wins}W/{s.losses}L</span>
                       <span className="w-2 h-2 rounded-full"style={{background:confDot}}
                         title={`Confidence: ${s.confidence}`}/>
+                      {/* Override controls */}
+                      <span className="flex items-center gap-0 ml-1">
+                        <button onClick={()=>adjustSourceWeight(s.source,-0.25)}
+                          className="w-5 h-5 flex items-center justify-center rounded hover:bg-gray-700 text-gray-500 hover:text-gray-300"
+                          title={`Decrease weight (${mult}×)`}>−</button>
+                        <span className="w-8 text-center text-gray-600"style={{fontSize:'9px'}}>
+                          {isOverridden?`${mult}×`:''}
+                        </span>
+                        <button onClick={()=>adjustSourceWeight(s.source,0.25)}
+                          className="w-5 h-5 flex items-center justify-center rounded hover:bg-gray-700 text-gray-500 hover:text-gray-300"
+                          title={`Increase weight (${mult}×)`}>+</button>
+                      </span>
                     </div>
                   );
                 })}

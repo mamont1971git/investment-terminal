@@ -565,6 +565,7 @@ module.exports = async (req, res) => {
   const command = parsed.command || 'run investment analysis';
   const mode = parsed.mode || 'full'; // 'quick' = Haiku (cheap), 'full' = Sonnet (deep + attribution)
   let minScore = Number(parsed.minScore) || 65; // configurable BUY threshold (default 65)
+  const sourceOverrides = parsed.sourceOverrides || null; // {source: multiplier} from UI
 
   // Detect single-ticker assessment mode
   const tickerMatch = command.match(/^score\s+([A-Z]{1,5})$/i) || command.match(/^assess\s+([A-Z]{1,5})$/i);
@@ -1026,7 +1027,17 @@ RULES:
 - If any position is near its stop-loss or TP1, flag urgency as "urgent" or "watch".`;
 
   // ── FULL MODE: Sonnet — deep analysis with attribution ─────────────────
-  const attributionRulesText = `- Include "signalAttribution" array with 7 sources: "Technical Analysis", "CNN Fear & Greed", "Capitol Trades", "Finviz Screener", "Earnings Calendar", "Sector Momentum", "World Monitor". Each: {source, weight(0-100, sum=100), signal(1 sentence), verdict(BULLISH/BEARISH/NEUTRAL/NO_DATA)}. NO_DATA sources get weight 0.`;
+  // Build source weight guidance from overrides (user manual adjustments)
+  let sourceOverrideText = '';
+  if (sourceOverrides && Object.keys(sourceOverrides).length > 0) {
+    const parts = Object.entries(sourceOverrides)
+      .filter(([, mult]) => mult !== 1.0)
+      .map(([src, mult]) => `${src}: ${mult}× weight`);
+    if (parts.length > 0) {
+      sourceOverrideText = `\nUSER WEIGHT OVERRIDES (apply these multipliers when assigning signalAttribution weights — e.g. if a source normally gets 15% and has 1.5× override, give it ~22%): ${parts.join(', ')}. After applying multipliers, normalize so weights still sum to 100.`;
+    }
+  }
+  const attributionRulesText = `- Include "signalAttribution" array with 7 sources: "Technical Analysis", "CNN Fear & Greed", "Capitol Trades", "Finviz Screener", "Earnings Calendar", "Sector Momentum", "World Monitor". Each: {source, weight(0-100, sum=100), signal(1 sentence), verdict(BULLISH/BEARISH|NEUTRAL/NO_DATA)}. NO_DATA sources get weight 0.${sourceOverrideText}`;
 
   const fullContext = `${marketHeader}
 
