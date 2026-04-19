@@ -26,6 +26,28 @@
 <script type="text/babel">
 const {useState,useEffect,useRef,useMemo,useCallback}=React;
 
+// ─── error boundary — never show a blank page ───────────────────────────
+class ErrorBoundary extends React.Component{
+  constructor(props){super(props);this.state={hasError:false,error:null};}
+  static getDerivedStateFromError(error){return{hasError:true,error};}
+  componentDidCatch(error,info){console.error('[ErrorBoundary]',error,info);}
+  render(){
+    if(this.state.hasError){
+      return React.createElement('div',{style:{padding:'40px',textAlign:'center',background:'#07090f',color:'#e2e8f0',minHeight:'100vh'}},
+        React.createElement('div',{style:{fontSize:'48px',marginBottom:'16px'}},'⚠️'),
+        React.createElement('div',{style:{fontSize:'18px',fontWeight:'bold',marginBottom:'8px'}},'Something went wrong'),
+        React.createElement('div',{style:{fontSize:'13px',color:'#94a3b8',marginBottom:'16px',maxWidth:'500px',margin:'0 auto 16px'}},
+          String(this.state.error?.message||this.state.error||'Unknown error')),
+        React.createElement('button',{
+          onClick:()=>window.location.reload(),
+          style:{background:'#3b82f6',color:'white',border:'none',padding:'10px 24px',borderRadius:'8px',cursor:'pointer',fontWeight:'bold'}
+        },'Refresh Page')
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────
 const fmt=(n,d=2)=>n==null?'—':Number(n).toFixed(d);
 const load=(k,fb)=>{try{return JSON.parse(localStorage.getItem(k))??fb}catch{return fb}};
@@ -415,6 +437,7 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   const [closed,setClosed]=useState(false);
   const [closeResult,setCloseResult]=useState(null);
   const [showAllActions,setShowAllActions]=useState(false);
+  const [showDetails,setShowDetails]=useState(false); // must be before any conditional returns
 
   const handleClose=async(action,label)=>{
     // Tighten stop is an update, not a close
@@ -487,7 +510,6 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     );
   }
 
-  const [showDetails,setShowDetails]=useState(false);
   const tp1Pct=t.entryPrice?((tp1-t.entryPrice)/t.entryPrice*100):null;
   const tp2Pct=t.entryPrice?((tp2-t.entryPrice)/t.entryPrice*100):null;
   const stopPct=t.entryPrice&&t.stopLoss?((t.stopLoss-t.entryPrice)/t.entryPrice*100):null;
@@ -3119,7 +3141,7 @@ function App(){
   return<DailyBrief/>;
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+ReactDOM.createRoot(document.getElementById('root')).render(<ErrorBoundary><App/></ErrorBoundary>);
 </script>
 </body>
 </html>
