@@ -36,20 +36,26 @@ async function fetchFinvizSignals() {
     oversoldBounce: 'v=111&f=cap_midover,ta_rsi_os30,ta_change_u1&ft=4&o=rsi',
   };
   const results = {};
-  // Parallelize all 4 screener fetches instead of sequential
+  const errors = [];
   await Promise.all(Object.entries(screens).map(async ([name, params]) => {
     try {
       const r = await httpsGet(`https://finviz.com/screener.ashx?${params}`, {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Accept': 'text/html',
       });
+      if (r.status !== 200) {
+        errors.push(`${name}: HTTP ${r.status}`);
+        results[name] = [];
+        return;
+      }
       const tickerMatches = r.body.match(/screener-link-primary"[^>]*>([A-Z]{1,5})<\/a>/g) || [];
       results[name] = tickerMatches.slice(0, 8).map(m => {
         const t = m.match(/>([A-Z]{1,5})</);
         return t ? t[1] : null;
       }).filter(Boolean);
-    } catch { results[name] = []; }
+    } catch (e) { errors.push(`${name}: ${e.message||'unknown'}`); results[name] = []; }
   }));
+  results._errors = errors.length > 0 ? errors : null;
   return results;
 }
 
@@ -60,19 +66,9 @@ async function fetchCapitolTrades() {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
       'Accept': 'text/html',
     });
-    if (r.status !== 200) return [];
+    if (r.status !== 200) return { trades: [], _error: `HTTP ${r.status}` };
 
-    // Extract trade rows from HTML — look for ticker symbols and politician names
-    // Capitol Trades uses table rows with ticker links and politician info
     const trades = [];
-
-    // Pattern 1: extract ticker symbols from trade links
-    const tickerPattern = /issuer-ticker[^>]*>([A-Z]{1,5})<\/span>/g;
-    const politicianPattern = /politician-name[^>]*>([^<]+)<\/a>/g;
-    const typePattern = /trade-type[^>]*>(buy|sell)<\/span>/gi;
-
-    // Simpler approach: look for structured data patterns in the HTML
-    // Capitol Trades pages contain rows like: politician | ticker | type | date | amount
     const rowPattern = /<tr[^>]*class="[^"]*q-tr[^"]*"[^>]*>([\s\S]*?)<\/tr>/gi;
     let match;
     while ((match = rowPattern.exec(r.body)) !== null && trades.length < 20) {
@@ -105,20 +101,27 @@ async function fetchCapitolTrades() {
       }
     }
 
-    // Deduplicate by ticker and take unique recent trades
+    // Deduplicate by ticker
     const seen = new Set();
-    return trades.filter(t => {
+    const deduped = trades.filter(t => {
       if (seen.has(t.ticker)) return false;
       seen.add(t.ticker);
       return true;
     }).slice(0, 15);
-  } catch { return []; }
+
+    // Parsing worked but 0 results = possible HTML structure change
+    const _error = (r.body.length > 1000 && deduped.length === 0)
+      ? 'HTML received but 0 trades parsed — page structure may have changed'
+      : null;
+
+    return { trades: deduped, _error };
+  } catch (e) { return { trades: [], _error: e.message || 'Network error' }; }
 }
 
 // ── World Monitor: live geopolitical + macro intelligence ───────────────
 async function fetchWorldMonitor() {
   const WM = 'https://api.worldmonitor.app';
-  const results = { macroSignals: null, fearGreed: null, geopolitical: null, newsHeadlines: null, earningsCalendar: null, economicCalendar: null };
+  const results = { macroSignals: null, fearGreed: null, geopolitical: null, newsHeadlines: null, earningsCalendar: null, economicCalendar: null, _errors: [] };
   try {
     // Build date range for calendars: today → +14 days
     const now = new Date();
@@ -137,10 +140,11 @@ async function fetchWorldMonitor() {
 
     // 1. Macro Signals — verdict, bullish count, signal statuses
     try {
+      if (macroR.status !== 200) throw new Error(`HTTP ${macroR.status}`);
       const macro = JSON.parse(macroR.body);
       const signals = {};
       for (const [k, v] of Object.entries(macro.signals || {})) {
-        const { sparkline, history, ...rest } = v; // strip large arrays
+        const { sparkline, history, ...rest } = v;
         signals[k] = rest;
       }
       results.macroSignals = {
@@ -150,10 +154,11 @@ async function fetchWorldMonitor() {
         totalCount: macro.totalCount,
         signals,
       };
-    } catch {}
+    } catch (e) { results._errors.push(`Macro Signals: ${e.message}`); }
 
     // 2. Fear & Greed Composite — score + component breakdown
     try {
+      if (fgR.status !== 200) throw new Error(`HTTP ${fgR.status}`);
       const fg = JSON.parse(fgR.body);
       const components = {};
       for (const key of ['sentiment','volatility','positioning','breadth','momentum','safe_haven','options']) {
@@ -168,10 +173,11 @@ async function fetchWorldMonitor() {
         seededAt: fg.seededAt,
         components,
       };
-    } catch {}
+    } catch (e) { results._errors.push(`Fear & Greed: ${e.message}`); }
 
     // 3. Geopolitical Forecast — active threat theaters
     try {
+      if (simR.status !== 200) throw new Error(`HTTP ${simR.status}`);
       const sim = JSON.parse(simR.body);
       const theaters = JSON.parse(sim.theaterSummariesJson || '[]');
       results.geopolitical = {
@@ -179,10 +185,11 @@ async function fetchWorldMonitor() {
         theaterCount: sim.theaterCount,
         theaters: theaters.map(t => ({ id: t.theaterId, label: t.theaterLabel })),
       };
-    } catch {}
+    } catch (e) { results._errors.push(`Geopolitical: ${e.message}`); }
 
     // 4. News Headlines — top 3 from finance + geopolitical categories
     try {
+      if (newsR.status !== 200) throw new Error(`HTTP ${newsR.status}`);
       const news = JSON.parse(newsR.body);
       const cats = news.categories || {};
       const headlines = [];
@@ -192,53 +199,60 @@ async function fetchWorldMonitor() {
           headlines.push({ category: cat, title: item.title, source: item.source });
         }
       }
-      results.newsHeadlines = headlines.slice(0, 8); // cap at 8 headlines
-    } catch {}
+      results.newsHeadlines = headlines.slice(0, 8);
+    } catch (e) { results._errors.push(`News: ${e.message}`); }
 
     // 5. Earnings Calendar — next 2 weeks, filtered to relevant tickers
     try {
+      if (earningsR.status !== 200) throw new Error(`HTTP ${earningsR.status}`);
       const earn = JSON.parse(earningsR.body);
       const allEarnings = earn.earnings || [];
-      // Keep: tickers in portfolio, plus top market-cap names (max 15 total to stay lean)
       results.earningsCalendar = allEarnings
         .filter(e => e.symbol && e.date)
         .map(e => ({ symbol: e.symbol, date: e.date, time: e.time || '', estimate: e.epsEstimate, name: e.name }))
-        .slice(0, 20); // cap to keep prompt lean
-    } catch {}
+        .slice(0, 20);
+    } catch (e) { results._errors.push(`Earnings Calendar: ${e.message}`); }
 
     // 6. Economic Calendar — upcoming macro events (FOMC, CPI, NFP, etc.)
     try {
+      if (econR.status !== 200) throw new Error(`HTTP ${econR.status}`);
       const econ = JSON.parse(econR.body);
       const events = econ.events || [];
       results.economicCalendar = events
         .filter(e => e.event || e.name)
         .map(e => ({ date: e.date, event: e.event || e.name, country: e.country, impact: e.impact, actual: e.actual, forecast: e.forecast, previous: e.previous }))
-        .slice(0, 15); // cap at 15 events
-    } catch {}
-  } catch {} // outer catch — if entire WM is down, proceed without it
+        .slice(0, 15);
+    } catch (e) { results._errors.push(`Economic Calendar: ${e.message}`); }
+  } catch (e) { results._errors.push(`World Monitor DOWN: ${e.message}`); } // entire WM is down
 
   return results;
 }
 
 async function fetchMarketData() {
+  const _errors = [];
+  let vix = null, spyPrice = null, spyAbove = null;
   try {
     const r = await httpsGet(`https://stooq.com/q/d/l/?s=%5EVIX&i=d`);
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
     const lines = r.body.trim().split('\n').slice(1).filter(l=>l.includes(','));
     const last = lines[lines.length-1]?.split(',');
-    const vix = last ? parseFloat(last[4]||last[1]) : null;
+    vix = last ? parseFloat(last[4]||last[1]) : null;
+    if (!vix) _errors.push('VIX: parsed but got null value');
+  } catch (e) { _errors.push(`VIX: ${e.message}`); }
 
-    // SPY price via Finnhub
+  try {
     const FINNHUB = process.env.FINNHUB_KEY;
-    let spyPrice=null, spyAbove=null;
-    if (FINNHUB) {
+    if (!FINNHUB) { _errors.push('SPY: FINNHUB_KEY not set'); }
+    else {
       const sr = await httpsGet(`https://finnhub.io/api/v1/quote?symbol=SPY&token=${FINNHUB}`);
       const q = JSON.parse(sr.body);
       spyPrice = q && q.c && q.c > 0 ? q.c : null;
-      spyAbove = vix ? vix < 22 : null; // approximate
+      if (!spyPrice) _errors.push('SPY: Finnhub returned no price');
+      spyAbove = vix ? vix < 22 : null;
     }
+  } catch (e) { _errors.push(`SPY: ${e.message}`); }
 
-    return { vix, spyPrice, spyAbove, fg: null }; // F&G often blocked, Claude will note
-  } catch { return { vix: null, spyPrice: null, spyAbove: null, fg: null }; }
+  return { vix, spyPrice, spyAbove, fg: null, _errors: _errors.length > 0 ? _errors : null };
 }
 
 async function fetchOpenTrades(token) {
@@ -770,16 +784,19 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
 
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick' && !isAssessMode;
-  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals, capitolTrades, approvedTunings] = await Promise.all([
+  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals, capitolTradesRaw, approvedTunings] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
     (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
     fetchWorldMonitor(),
     NOTION_TOKEN ? fetchWalletState(NOTION_TOKEN) : Promise.resolve({ cashBalance: 0, totalInvested: 0, totalValue: 0, holdings: {}, txCount: 0 }),
     (isDiscoverMode || mode === 'full') ? fetchFinvizSignals() : Promise.resolve(null),
-    (!isQuick) ? fetchCapitolTrades() : Promise.resolve([]),
+    (!isQuick) ? fetchCapitolTrades() : Promise.resolve({ trades: [], _error: null }),
     (!isQuick && !isDiagnoseMode && NOTION_TOKEN) ? fetchApprovedTunings(NOTION_TOKEN) : Promise.resolve([]),
   ]);
+  // Unwrap Capitol Trades (now returns {trades, _error})
+  const capitolTrades = capitolTradesRaw.trades || capitolTradesRaw || [];
+  const capitolTradesError = capitolTradesRaw._error || null;
 
   // ── Tuning-derived minScore override ──────────────────────────────────
   // If approved tunings contain scoring/regime threshold changes, extract
@@ -949,6 +966,20 @@ LIVE MARKET DATA:
 - SPY: ${market.spyPrice ? '$'+market.spyPrice.toFixed(2) : 'unavailable'} | Above 50 EMA: ${taData.SPY?.emaAlignment ? (taData.SPY.emaAlignment.above50?'YES':'NO') + ' (computed: price $'+taData.SPY.price+' vs EMA50 $'+taData.SPY.emaAlignment.ema50+')' : market.spyAbove===null?'approx from VIX':market.spyAbove?'YES':'NO'}
 ${taContext}${wmContext}
 
+${(()=>{
+  // Build source health report for Claude — tells it which sources to mark NO_DATA vs NEUTRAL
+  const failed = [];
+  if (!market.vix) failed.push('VIX' + (market._errors ? ` (${market._errors.find(e=>e.startsWith('VIX'))})` : ''));
+  if (!market.spyPrice) failed.push('SPY Price' + (market._errors ? ` (${market._errors.find(e=>e.startsWith('SPY'))})` : ''));
+  if (wm._errors && wm._errors.length > 0) wm._errors.forEach(e => failed.push(e));
+  if (finvizErrors) finvizErrors.forEach(e => failed.push(`Finviz ${e}`));
+  if (capitolTradesError) failed.push(`Capitol Trades: ${capitolTradesError}`);
+  if (failed.length === 0) return '';
+  return `⚠️ DATA SOURCE FAILURES (${failed.length}):
+${failed.map(f => `  ❌ ${f}`).join('\n')}
+IMPORTANT: For sources that FAILED above, use verdict NO_DATA with weight 0 in signalAttribution. For sources that loaded successfully but have no specific signal for a ticker, use verdict NEUTRAL with weight 3-8%.
+`;
+})()}
 💰 VIRTUAL WALLET:
 - Cash Available: $${walletState.cashBalance.toFixed(2)}
 - Total Invested: $${walletState.totalInvested.toFixed(2)}
@@ -1677,16 +1708,26 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   analysis._effectiveMinScore = minScore;
   if (tuningMinScore !== null) analysis._tuningMinScore = tuningMinScore;
 
-  // Track source availability for frontend alerts
+  // Track source availability for frontend alerts — with error details
+  const finvizErrors = finvizSignals?._errors || null;
+  const finvizTickers = finvizSignals ? Object.entries(finvizSignals).filter(([k])=>k!=='_errors') : [];
+  const finvizHasData = finvizTickers.some(([,v]) => Array.isArray(v) && v.length > 0);
   analysis._sourceStatus = {
     technicalAnalysis: Object.keys(taData).length > 0 ? 'ok' : 'failed',
     worldMonitor: (wm.macroSignals || wm.fearGreed) ? 'ok' : 'failed',
-    finvizScreener: finvizSignals ? (Object.values(finvizSignals).some(v => v.length > 0) ? 'ok' : 'empty') : 'skipped',
-    capitolTrades: capitolTrades && capitolTrades.length > 0 ? 'ok' : 'failed',
+    finvizScreener: finvizSignals ? (finvizErrors ? 'error' : (finvizHasData ? 'ok' : 'empty')) : 'skipped',
+    capitolTrades: capitolTrades.length > 0 ? 'ok' : (capitolTradesError ? 'error' : 'failed'),
     earningsCalendar: wm.earningsCalendar && wm.earningsCalendar.length > 0 ? 'ok' : 'empty',
     fearGreed: wm.fearGreed ? 'ok' : 'failed',
     finnhubPrice: market.spyPrice ? 'ok' : 'failed',
   };
+  // Collect all source errors into one array for frontend
+  const sourceErrors = [];
+  if (market._errors) market._errors.forEach(e => sourceErrors.push({ source: 'Market Data', error: e }));
+  if (wm._errors && wm._errors.length > 0) wm._errors.forEach(e => sourceErrors.push({ source: 'World Monitor', error: e }));
+  if (finvizErrors) finvizErrors.forEach(e => sourceErrors.push({ source: 'Finviz', error: e }));
+  if (capitolTradesError) sourceErrors.push({ source: 'Capitol Trades', error: capitolTradesError });
+  if (sourceErrors.length > 0) analysis._sourceErrors = sourceErrors;
   // Collect price alerts for opportunities that couldn't get live prices
   analysis.priceAlerts = (analysis.opportunities || [])
     .filter(o => o._priceAlert)
