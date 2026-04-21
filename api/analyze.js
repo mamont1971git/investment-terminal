@@ -565,6 +565,7 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Methods','POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers','Content-Type');
   if (req.method==='OPTIONS') return res.status(200).end();
+  try {
 
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
   const NOTION_TOKEN  = process.env.NOTION_TOKEN;
@@ -1770,4 +1771,8 @@ Be constructive but unflinching. Every recommendation must be specific and imple
     .filter(o => o._walletBlocked)
     .map(o => ({ ticker: o.ticker, alert: o._walletAlert }));
   res.json(analysis);
+  } catch (fatalErr) {
+    console.error('FATAL analyze.js error:', fatalErr);
+    return res.status(500).json({ error: fatalErr.message, stack: fatalErr.stack?.split('\n').slice(0,5) });
+  }
 };
