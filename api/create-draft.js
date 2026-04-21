@@ -75,7 +75,7 @@ module.exports = async (req, res) => {
 
   const stop=+(entryPrice*0.93).toFixed(2), tp1=+(entryPrice*1.08).toFixed(2),
         tp2=+(entryPrice*1.15).toFixed(2), tp3=+(entryPrice*1.22).toFixed(2);
-  const today=new Date().toISOString().split('T')[0];
+  const today=new Date().toISOString();
 
   // Map regime names from Claude (UPPER CASE) to Notion select options (Title Case)
   const REGIME_MAP = {

@@ -524,7 +524,7 @@ async function createDraft(ticker, strategy, score, reasoning, regime, positionP
   // Create the draft
   const stop=+(entryPrice*0.93).toFixed(2),tp1=+(entryPrice*1.08).toFixed(2),
         tp2=+(entryPrice*1.15).toFixed(2),tp3=+(entryPrice*1.22).toFixed(2);
-  const today=new Date().toISOString().split('T')[0];
+  const today=new Date().toISOString();
   const REGIME_MAP={'MEAN REVERSION ZONE':'Mean Reversion Zone','BREAKOUT ZONE':'Breakout Zone','CAUTION ZONE':'Caution Zone','EXTREME FEAR':'Caution Zone'};
   const regimeName=regime?(REGIME_MAP[regime.toUpperCase()]||regime):null;
   const props={
@@ -810,7 +810,7 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
   // Persist to Notion Error Log — fire-and-forget, never blocks response
   if (sourceErrors.length > 0 && NOTION_TOKEN) {
     const ERROR_LOG_DB = '9e459182b763489bbed331506762bd11';
-    const errDate = new Date().toISOString().split('T')[0];
+    const errDate = new Date().toISOString();
     Promise.all(sourceErrors.map(se => {
       const props = {
         'Error':     { title: [{ text: { content: `SOURCE_ERROR: ${se.source} — ${se.error}`.slice(0, 100) } }] },

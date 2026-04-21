@@ -66,7 +66,7 @@ async function createWalletBuy(ticker, shares, price, amount, tradeId, token) {
       'Price': { number: price },
       'Amount': { number: amount },
       'Balance After': { number: newBalance },
-      'Date': { date: { start: new Date().toISOString().split('T')[0] } },
+      'Date': { date: { start: new Date().toISOString() } },
       'Trade Link': { relation: [{ id: tradeId }] },
     },
   }, token);

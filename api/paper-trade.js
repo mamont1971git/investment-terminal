@@ -59,7 +59,7 @@ module.exports = async (req, res) => {
   const tp2   = +(entryPrice * 1.15).toFixed(2);
   const tp3   = +(entryPrice * 1.22).toFixed(2);
   const score = t.score ? Number(t.score) : null;
-  const today = new Date().toISOString().split('T')[0];
+  const today = new Date().toISOString();
 
   const props = {
     'Trade':              { title:[{text:{content:`🧪 ${ticker} — ${t.strategy||'Paper'} [SIM]`}}] },

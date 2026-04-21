@@ -59,7 +59,7 @@ module.exports = async (req, res) => {
 
   const trades = result.results || [];
   const updates = [];
-  const today = new Date().toISOString().split('T')[0];
+  const today = new Date().toISOString();
 
   for (const page of trades) {
     const p = page.properties;

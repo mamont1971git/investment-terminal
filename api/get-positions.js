@@ -366,7 +366,7 @@ module.exports = async (req, res) => {
     if (parsed.action === 'update_stop') {
       const { notionId, newStop, ticker, decisionReason, decisionRule } = parsed;
       if (!notionId || newStop == null) return res.status(400).json({ error: 'notionId and newStop required' });
-      const today = new Date().toISOString().split('T')[0];
+      const today = new Date().toISOString();
       const reasonText = decisionReason
         ? `SYSTEM DECISION (${today}): Stop tightened to $${Number(newStop).toFixed(2)}. ${decisionReason}`
         : `Stop tightened to breakeven ($${Number(newStop).toFixed(2)}) on ${today} — system auto-recommendation`;
@@ -405,7 +405,7 @@ module.exports = async (req, res) => {
     if (parsed.action === 'tuning_log') {
       const rec = parsed.rec;
       if (!rec || !rec.title) return res.status(400).json({ error: 'rec.title required' });
-      const today = new Date().toISOString().split('T')[0];
+      const today = new Date().toISOString();
       const props = {
         'Recommendation': { title: [{ text: { content: rec.title } }] },
         'Category': { select: { name: rec.category || 'scoring' } },
@@ -449,7 +449,7 @@ module.exports = async (req, res) => {
     if (parsed.action === 'eval_save') {
       const report = parsed.report;
       if (!report) return res.status(400).json({ error: 'report required' });
-      const today = new Date().toISOString().split('T')[0];
+      const today = new Date().toISOString();
       const approvalsJson = JSON.stringify(parsed.approvals || {});
       const isNewRun = !!parsed.newRun; // true when fresh evaluation, false for approval updates
 
@@ -589,7 +589,7 @@ module.exports = async (req, res) => {
         let runningBalance = computeWalletState(walletTxs).cashBalance;
 
         let archived = 0;
-        const today = new Date().toISOString().split('T')[0];
+        const today = new Date().toISOString();
 
         for (const page of (openResult.results || [])) {
           const p = page.properties;

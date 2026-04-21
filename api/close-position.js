@@ -56,7 +56,7 @@ module.exports = async (req, res) => {
   const { notionId, action, ticker, entryPrice, decisionReason, decisionRule } = t;
   if (!notionId) return res.status(400).json({ error: 'notionId required' });
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = new Date().toISOString();
 
   // Fetch live price if available
   let currentPrice = t.exitPrice ? parseFloat(t.exitPrice) : null;

@@ -60,7 +60,7 @@ module.exports = async (req, res) => {
           'Context':   { rich_text: [{ text: { content: String(err.context || '').slice(0, 500) } }] },
           'Protocol':  { rich_text: [{ text: { content: String(err.protocol || '') } }] },
           'Resolved':  { checkbox: false },
-          'Timestamp': { date: { start: new Date(err.ts || Date.now()).toISOString().split('T')[0] } },
+          'Timestamp': { date: { start: new Date(err.ts || Date.now()).toISOString() } },
         },
       }, NOTION_TOKEN);
       results.push({ ok: r.status < 300, status: r.status });
