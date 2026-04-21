@@ -802,22 +802,9 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
   const finvizFetchErrors = finvizSignals?._errors || null;
   const sourceErrors = [];
   if (market._errors) market._errors.forEach(e => sourceErrors.push({ source: 'Market Data', error: e }));
-  if (wm._errors && wm._errors.length > 0) wm._errors.forEach(e => sourceErrors.push({ source: 'World Monitor', error: e }));
+  if (worldMonitor._errors && worldMonitor._errors.length > 0) worldMonitor._errors.forEach(e => sourceErrors.push({ source: 'World Monitor', error: e }));
   if (finvizFetchErrors) finvizFetchErrors.forEach(e => sourceErrors.push({ source: 'Finviz', error: e }));
   if (capitolTradesError) sourceErrors.push({ source: 'Capitol Trades', error: capitolTradesError });
-
-  // Build source status map
-  const finvizTickers = finvizSignals ? Object.entries(finvizSignals).filter(([k])=>k!=='_errors') : [];
-  const finvizHasData = finvizTickers.some(([,v]) => Array.isArray(v) && v.length > 0);
-  const _sourceStatus = {
-    technicalAnalysis: Object.keys(taData).length > 0 ? 'ok' : 'failed',
-    worldMonitor: (wm.macroSignals || wm.fearGreed) ? 'ok' : 'failed',
-    finvizScreener: finvizSignals ? (finvizFetchErrors ? 'error' : (finvizHasData ? 'ok' : 'empty')) : 'skipped',
-    capitolTrades: capitolTrades.length > 0 ? 'ok' : (capitolTradesError ? 'error' : 'failed'),
-    earningsCalendar: wm.earningsCalendar && wm.earningsCalendar.length > 0 ? 'ok' : 'empty',
-    fearGreed: wm.fearGreed ? 'ok' : 'failed',
-    finnhubPrice: market.spyPrice ? 'ok' : 'failed',
-  };
 
   // Persist to Notion Error Log — fire-and-forget, never blocks response
   if (sourceErrors.length > 0 && NOTION_TOKEN) {
@@ -1003,6 +990,19 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
   const fgDisplay = wm.fearGreed
     ? `${wm.fearGreed.compositeScore} — "${wm.fearGreed.compositeLabel}" (World Monitor composite, VIX=${wm.fearGreed.components?.volatility?.inputs?.vix || market.vix || '?'})`
     : (market.vix ? `VIX proxy: ${market.vix.toFixed(2)} (CNN F&G blocked)` : 'unavailable');
+
+  // Build source status map (after taData is available)
+  const finvizTickers = finvizSignals ? Object.entries(finvizSignals).filter(([k])=>k!=='_errors') : [];
+  const finvizHasData = finvizTickers.some(([,v]) => Array.isArray(v) && v.length > 0);
+  const _sourceStatus = {
+    technicalAnalysis: Object.keys(taData).length > 0 ? 'ok' : 'failed',
+    worldMonitor: (wm.macroSignals || wm.fearGreed) ? 'ok' : 'failed',
+    finvizScreener: finvizSignals ? (finvizFetchErrors ? 'error' : (finvizHasData ? 'ok' : 'empty')) : 'skipped',
+    capitolTrades: capitolTrades.length > 0 ? 'ok' : (capitolTradesError ? 'error' : 'failed'),
+    earningsCalendar: wm.earningsCalendar && wm.earningsCalendar.length > 0 ? 'ok' : 'empty',
+    fearGreed: wm.fearGreed ? 'ok' : 'failed',
+    finnhubPrice: market.spyPrice ? 'ok' : 'failed',
+  };
 
   // Build market header (shared by both modes)
   const marketHeader = `TODAY: ${today}
