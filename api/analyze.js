@@ -798,6 +798,53 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
   const capitolTrades = capitolTradesRaw.trades || capitolTradesRaw || [];
   const capitolTradesError = capitolTradesRaw._error || null;
 
+  // ── Collect source errors + persist to Notion Error Log (all phases) ──
+  const finvizFetchErrors = finvizSignals?._errors || null;
+  const sourceErrors = [];
+  if (market._errors) market._errors.forEach(e => sourceErrors.push({ source: 'Market Data', error: e }));
+  if (wm._errors && wm._errors.length > 0) wm._errors.forEach(e => sourceErrors.push({ source: 'World Monitor', error: e }));
+  if (finvizFetchErrors) finvizFetchErrors.forEach(e => sourceErrors.push({ source: 'Finviz', error: e }));
+  if (capitolTradesError) sourceErrors.push({ source: 'Capitol Trades', error: capitolTradesError });
+
+  // Build source status map
+  const finvizTickers = finvizSignals ? Object.entries(finvizSignals).filter(([k])=>k!=='_errors') : [];
+  const finvizHasData = finvizTickers.some(([,v]) => Array.isArray(v) && v.length > 0);
+  const _sourceStatus = {
+    technicalAnalysis: Object.keys(taData).length > 0 ? 'ok' : 'failed',
+    worldMonitor: (wm.macroSignals || wm.fearGreed) ? 'ok' : 'failed',
+    finvizScreener: finvizSignals ? (finvizFetchErrors ? 'error' : (finvizHasData ? 'ok' : 'empty')) : 'skipped',
+    capitolTrades: capitolTrades.length > 0 ? 'ok' : (capitolTradesError ? 'error' : 'failed'),
+    earningsCalendar: wm.earningsCalendar && wm.earningsCalendar.length > 0 ? 'ok' : 'empty',
+    fearGreed: wm.fearGreed ? 'ok' : 'failed',
+    finnhubPrice: market.spyPrice ? 'ok' : 'failed',
+  };
+
+  // Persist to Notion Error Log — fire-and-forget, never blocks response
+  if (sourceErrors.length > 0 && NOTION_TOKEN) {
+    const ERROR_LOG_DB = '9e459182b763489bbed331506762bd11';
+    const errDate = new Date().toISOString().split('T')[0];
+    Promise.all(sourceErrors.map(se => {
+      const props = {
+        'Error':     { title: [{ text: { content: `SOURCE_ERROR: ${se.source} — ${se.error}`.slice(0, 100) } }] },
+        'Type':      { select: { name: 'SOURCE_ERROR' } },
+        'Source':    { select: { name: 'analyze.js' } },
+        'Message':   { rich_text: [{ text: { content: `${se.source}: ${se.error}`.slice(0, 500) } }] },
+        'Context':   { rich_text: [{ text: { content: JSON.stringify({ mode, command: command.slice(0, 50), phase }).slice(0, 500) } }] },
+        'Resolved':  { checkbox: false },
+        'Timestamp': { date: { start: errDate } },
+      };
+      const body = JSON.stringify({ parent: { database_id: ERROR_LOG_DB }, properties: props });
+      return new Promise(resolve => {
+        const req = https.request({
+          hostname: 'api.notion.com', path: '/v1/pages', method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + NOTION_TOKEN, 'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) },
+        }, r => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>resolve()); });
+        req.on('error',()=>resolve()); req.write(body); req.end();
+      });
+    })).catch(() => {});
+  }
+
   // ── Tuning-derived minScore override ──────────────────────────────────
   // If approved tunings contain scoring/regime threshold changes, extract
   // the numeric value and use the highest as the effective hard gate.
@@ -972,7 +1019,7 @@ ${(()=>{
   if (!market.vix) failed.push('VIX' + (market._errors ? ` (${market._errors.find(e=>e.startsWith('VIX'))})` : ''));
   if (!market.spyPrice) failed.push('SPY Price' + (market._errors ? ` (${market._errors.find(e=>e.startsWith('SPY'))})` : ''));
   if (wm._errors && wm._errors.length > 0) wm._errors.forEach(e => failed.push(e));
-  if (finvizErrors) finvizErrors.forEach(e => failed.push(`Finviz ${e}`));
+  if (finvizFetchErrors) finvizFetchErrors.forEach(e => failed.push(`Finviz ${e}`));
   if (capitolTradesError) failed.push(`Capitol Trades: ${capitolTradesError}`);
   if (failed.length === 0) return '';
   return `⚠️ DATA SOURCE FAILURES (${failed.length}):
@@ -1370,6 +1417,8 @@ ADDITIONAL RULES:
         fearGreed: wm.fearGreed ? `${wm.fearGreed.compositeScore} (${wm.fearGreed.compositeLabel})` : null,
         geoTheaters: wm.geopolitical?.theaters?.map(t => t.label) || [],
       },
+      _sourceStatus,
+      _sourceErrors: sourceErrors.length > 0 ? sourceErrors : undefined,
     });
   }
 
@@ -1708,26 +1757,10 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   analysis._effectiveMinScore = minScore;
   if (tuningMinScore !== null) analysis._tuningMinScore = tuningMinScore;
 
-  // Track source availability for frontend alerts — with error details
-  const finvizErrors = finvizSignals?._errors || null;
-  const finvizTickers = finvizSignals ? Object.entries(finvizSignals).filter(([k])=>k!=='_errors') : [];
-  const finvizHasData = finvizTickers.some(([,v]) => Array.isArray(v) && v.length > 0);
-  analysis._sourceStatus = {
-    technicalAnalysis: Object.keys(taData).length > 0 ? 'ok' : 'failed',
-    worldMonitor: (wm.macroSignals || wm.fearGreed) ? 'ok' : 'failed',
-    finvizScreener: finvizSignals ? (finvizErrors ? 'error' : (finvizHasData ? 'ok' : 'empty')) : 'skipped',
-    capitolTrades: capitolTrades.length > 0 ? 'ok' : (capitolTradesError ? 'error' : 'failed'),
-    earningsCalendar: wm.earningsCalendar && wm.earningsCalendar.length > 0 ? 'ok' : 'empty',
-    fearGreed: wm.fearGreed ? 'ok' : 'failed',
-    finnhubPrice: market.spyPrice ? 'ok' : 'failed',
-  };
-  // Collect all source errors into one array for frontend
-  const sourceErrors = [];
-  if (market._errors) market._errors.forEach(e => sourceErrors.push({ source: 'Market Data', error: e }));
-  if (wm._errors && wm._errors.length > 0) wm._errors.forEach(e => sourceErrors.push({ source: 'World Monitor', error: e }));
-  if (finvizErrors) finvizErrors.forEach(e => sourceErrors.push({ source: 'Finviz', error: e }));
-  if (capitolTradesError) sourceErrors.push({ source: 'Capitol Trades', error: capitolTradesError });
+  // Attach source status + errors to response (collected earlier, before phase split)
+  analysis._sourceStatus = _sourceStatus;
   if (sourceErrors.length > 0) analysis._sourceErrors = sourceErrors;
+
   // Collect price alerts for opportunities that couldn't get live prices
   analysis.priceAlerts = (analysis.opportunities || [])
     .filter(o => o._priceAlert)
