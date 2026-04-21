@@ -898,7 +898,7 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
   if (assessTicker && !taTickers.includes(assessTicker)) taTickers.push(assessTicker);
   // In discover mode, fetch TA for top screener candidates
   if (finvizSignals) {
-    const allScreenerTickers = [...new Set(Object.values(finvizSignals).flat())];
+    const allScreenerTickers = [...new Set(Object.entries(finvizSignals).filter(([k])=>k!=='_errors').flatMap(([,v])=>v||[]))];
     for (const t of allScreenerTickers.slice(0, 4)) { // limit to 4 to stay within 60s timeout
       if (!taTickers.includes(t)) taTickers.push(t);
     }
@@ -1129,8 +1129,8 @@ RECENT CLOSED TRADES (last ${closedFormatted.length}):
 ${closedFormatted.length ? closedFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | P&L: ${t.pnl!=null?(t.pnl>0?'+':'')+t.pnl.toFixed(1)+'%':'open'} | Score was: ${t.score||'?'} | Lesson: ${t.lesson||'none'}`).join('\n') : 'None yet'}
 ${finvizSignals ? `
 📊 FINVIZ SCREENER SIGNALS (live unusual activity — use these to find NEW opportunities):
-${Object.entries(finvizSignals).map(([screen, tickers]) =>
-  `  ${screen}: ${tickers.length ? tickers.join(', ') : 'none'}`).join('\n')}
+${Object.entries(finvizSignals).filter(([k])=>k!=='_errors').map(([screen, tickers]) =>
+  `  ${screen}: ${Array.isArray(tickers) && tickers.length ? tickers.join(', ') : 'none'}`).join('\n')}
 NOTE: Stocks appearing in MULTIPLE screeners are stronger candidates. Cross-reference with TA data above.
 ` : ''}
 USER COMMAND: ${command}
@@ -1243,8 +1243,8 @@ ${attributionRulesText}` : null;
 ${discoverFocus ? `FOCUS: ${discoverFocus}` : 'BROAD SEARCH — look across all sectors'}
 
 FINVIZ SCREENER SIGNALS (live):
-${finvizSignals ? Object.entries(finvizSignals).map(([screen, tickers]) =>
-  `  ${screen}: ${tickers.length ? tickers.join(', ') : 'none found'}`
+${finvizSignals ? Object.entries(finvizSignals).filter(([k])=>k!=='_errors').map(([screen, tickers]) =>
+  `  ${screen}: ${Array.isArray(tickers) && tickers.length ? tickers.join(', ') : 'none found'}`
 ).join('\n') : '  Screener data unavailable'}
 
 ${Object.keys(taData).filter(t => t !== 'SPY' && !openTickers.includes(t)).length > 0 ?
