@@ -53,6 +53,70 @@ const fmt=(n,d=2)=>n==null?'—':Number(n).toFixed(d);
 const load=(k,fb)=>{try{return JSON.parse(localStorage.getItem(k))??fb}catch{return fb}};
 const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
+// ─── CENTRAL SETTINGS — Notion-backed, synced across all devices ────────────
+const SettingsContext=React.createContext({});
+function SettingsProvider({children}){
+  const [settings,setSettings]=useState({minScore:65,tradingMode:'dry-run',sourceOverrides:{}});
+  const [loaded,setLoaded]=useState(false);
+
+  // Load settings from Notion on mount
+  useEffect(()=>{
+    if(window.location.protocol==='file:'){setLoaded(true);return;}
+    fetch('/api/settings').then(r=>r.json()).then(s=>{
+      if(s&&!s.error) setSettings(prev=>({...prev,...s}));
+    }).catch(()=>{}).finally(()=>setLoaded(true));
+  },[]);
+
+  // Persist a setting change to Notion (fire-and-forget, optimistic local update)
+  const updateSetting=useCallback((key,value)=>{
+    setSettings(prev=>({...prev,[key]:value}));
+    if(window.location.protocol==='file:')return;
+    fetch('/api/settings',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({[key]:value}),
+    }).catch(()=>{});
+  },[]);
+
+  // Convenience helpers
+  const minScore=settings.minScore||65;
+  const tradingMode=settings.tradingMode||'dry-run';
+  const sourceOverrides=settings.sourceOverrides||{};
+
+  const setMinScore=useCallback((v)=>{
+    const n=Math.max(0,Math.min(100,Number(v)||65));
+    updateSetting('minScore',n);
+  },[updateSetting]);
+
+  const setTradingMode=useCallback((m)=>{
+    updateSetting('tradingMode',m);
+  },[updateSetting]);
+
+  const setSourceOverrides=useCallback((updater)=>{
+    setSettings(prev=>{
+      const cur=prev.sourceOverrides||{};
+      const next=typeof updater==='function'?updater(cur):updater;
+      // Fire-and-forget persist
+      if(window.location.protocol!=='file:'){
+        fetch('/api/settings',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({sourceOverrides:next}),
+        }).catch(()=>{});
+      }
+      return{...prev,sourceOverrides:next};
+    });
+  },[]);
+
+  const ctx=useMemo(()=>({
+    settings,loaded,updateSetting,
+    minScore,setMinScore,
+    tradingMode,setTradingMode,
+    sourceOverrides,setSourceOverrides,
+  }),[settings,loaded,updateSetting,minScore,setMinScore,tradingMode,setTradingMode,sourceOverrides,setSourceOverrides]);
+
+  return React.createElement(SettingsContext.Provider,{value:ctx},children);
+}
+function useSettings(){return React.useContext(SettingsContext);}
+
 // ─── error logging — saves locally + auto-pushes to Notion via API ──────────
 function logError(type,message,context={}){
   const entry={
@@ -279,10 +343,10 @@ const MODES = [
 ];
 
 function TradingModeSelector(){
-  const [mode,setMode]=useState(()=>load('tradingMode','dry-run'));
+  const {tradingMode:mode,setTradingMode}=useSettings();
   const [open,setOpen]=useState(false);
   const current=MODES.find(m=>m.id===mode)||MODES[0];
-  const onChange=(id)=>{ setMode(id); save('tradingMode',id); setOpen(false); };
+  const onChange=(id)=>{ setTradingMode(id); setOpen(false); };
   return(
     <div className="relative">
       <button onClick={()=>setOpen(o=>!o)}
@@ -312,7 +376,7 @@ function OrderDrafts(){
   const [drafts,setDrafts]=useState([]);
   const [loading,setLoading]=useState(true);
   const [acting,setActing]=useState(null);
-  const mode=load('tradingMode','dry-run');
+  const {tradingMode:mode,setTradingMode}=useSettings();
 
   const fetchDrafts=useCallback(async()=>{
     if(window.location.protocol==='file:'){setLoading(false);return;}
@@ -347,7 +411,7 @@ function OrderDrafts(){
       const d=await r.json();
       if(d.action==='ibkr-not-connected'){
         alert('IBKR not yet connected.\n\n'+d.message+'\n\nSwitching to Dry Run.');
-        save('tradingMode','dry-run');
+        setTradingMode('dry-run');
       }
       if(d.action==='wallet-blocked'){
         alert('💰 INSUFFICIENT FUNDS\n\n'+d.message);
@@ -865,7 +929,7 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
 
   // Check if a draft already exists for this ticker
   const existingDraft=existingDrafts.find(d=>d.ticker?.toUpperCase()===o.ticker?.toUpperCase());
-  const mode=load('tradingMode','dry-run');
+  const {tradingMode:mode,setTradingMode,minScore}=useSettings();
   const modeLabel=mode==='dry-run'?'Paper Trade':'IBKR Order';
 
   const createDraft=async()=>{
@@ -878,7 +942,7 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
           ticker:o.ticker,strategy:o.strategy||'Mean Reversion',
           score:o.score,reasoning:o.reasoning,regime:regime||'',
           positionPct:o.positionPct,entryPrice:o.entryPrice,
-          minScore:load('inv_minScore',65)
+          minScore
         }),
       });
       const d=await r.json();
@@ -899,7 +963,7 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
       const d=await r.json();
       if(d.action==='ibkr-not-connected'){
         alert('IBKR not yet connected.\n\n'+d.message+'\n\nSwitching to Dry Run.');
-        save('tradingMode','dry-run');
+        setTradingMode('dry-run');
       } else if(d.action==='wallet-blocked'){
         alert('💰 INSUFFICIENT FUNDS\n\n'+d.message);
         return;
@@ -974,6 +1038,7 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
 
 // ─── ANALYSIS PANEL — Claude embedded directly ───────────────────────────
 function TickerAssess(){
+  const {minScore,sourceOverrides:ctxSO}=useSettings();
   const [ticker,setTicker]=useState('');
   const [thesis,setThesis]=useState('');
   const [loading,setLoading]=useState(false);
@@ -984,9 +1049,8 @@ function TickerAssess(){
   const assess=async()=>{
     const t=ticker.trim().toUpperCase();
     if(!t)return;
-    const minScore=load('inv_minScore',65);
-    const so=load('inv_sourceOverrides',{});
-    const hasSO=Object.keys(so).length>0;
+    const hasSO=Object.keys(ctxSO).length>0;
+    const so=ctxSO;
     setLoading(true);setError(null);setResult(null);
     try{
       // Two-phase: data fetch → AI analysis
@@ -1138,8 +1202,7 @@ function AnalysisPanel({onPositionsUpdate}){
   const [result,setResult]=useState(null);
   const [error,setError]=useState(null);
   const [command,setCommand]=useState('full_analysis');
-  const [minScore,setMinScore]=useState(()=>load('inv_minScore',65));
-  const updateMinScore=(v)=>{const n=Math.max(0,Math.min(100,Number(v)||65));setMinScore(n);save('inv_minScore',n);};
+  const {minScore,setMinScore,sourceOverrides:ctxSourceOverrides}=useSettings();
   const [existingDrafts,setExistingDrafts]=useState([]);
 
   // Fetch existing drafts — called after each analysis and on mount
@@ -1153,8 +1216,8 @@ function AnalysisPanel({onPositionsUpdate}){
   },[]);
   useEffect(()=>{fetchExistingDrafts();},[fetchExistingDrafts]);
 
-  // Read source overrides from localStorage for analysis requests
-  const getSourceOverrides=()=>{const so=load('inv_sourceOverrides',{});return Object.keys(so).length>0?so:null;};
+  // Read source overrides from settings context
+  const getSourceOverrides=()=>{return Object.keys(ctxSourceOverrides).length>0?ctxSourceOverrides:null;};
 
   const run=async(cmd,mode='full')=>{
     if(window.location.protocol==='file:'){
@@ -1267,7 +1330,7 @@ function AnalysisPanel({onPositionsUpdate}){
         }
         // Sync minScore if tuning overrides changed it server-side
         const ems=oppData._effectiveMinScore||posData._effectiveMinScore;
-        if(ems&&ems!==minScore)updateMinScore(ems);
+        if(ems&&ems!==minScore)setMinScore(ems);
       }else{
         // Other modes (assess, discover, diagnose): single Sonnet call
         const r1=await fetch('/api/analyze',{
@@ -1303,7 +1366,7 @@ function AnalysisPanel({onPositionsUpdate}){
             };
           }));
         }
-        if(d._effectiveMinScore&&d._effectiveMinScore!==minScore)updateMinScore(d._effectiveMinScore);
+        if(d._effectiveMinScore&&d._effectiveMinScore!==minScore)setMinScore(d._effectiveMinScore);
       }
     }catch(e){setError(e.message);}
     finally{setLoading(false);fetchExistingDrafts();}
@@ -1333,7 +1396,7 @@ function AnalysisPanel({onPositionsUpdate}){
           <div className="flex items-center gap-2" title="Minimum composite score for BUY recommendations (vs WATCHLIST). Auto-adjusted by evaluate+heal system.">
             <label className="text-xs text-gray-500">BUY threshold:</label>
             <input type="number" min="0" max="100" value={minScore}
-              onChange={e=>updateMinScore(e.target.value)}
+              onChange={e=>setMinScore(e.target.value)}
               className="w-14 text-xs text-center rounded px-1 py-0.5"
               style={{background:'#1e2d4a',color:'#e2e8f0',border:'1px solid #334155'}}/>
             {result?._tuningMinScore&&<span className="text-xs" style={{color:'#f59e0b'}} title={`Tuning override active: evaluate+heal raised threshold from default to ${result._tuningMinScore}`}>🔧</span>}
@@ -1695,6 +1758,7 @@ function QuickCommands(){
 
 // ─── DAILY BRIEF (main view) ──────────────────────────────────────────────
 function DailyBrief(){
+  const {minScore,tradingMode}=useSettings();
   const [live,setLive]=useState(null);
   const [status,setStatus]=useState('idle'); // idle | loading | done | failed
   const [ts,setTs]=useState(null);
@@ -1716,18 +1780,17 @@ function DailyBrief(){
   const [stats,setStats]=useState(null);
   const [wallet,setWallet]=useState(null);
   const [sourceWeights,setSourceWeights]=useState(null);
-  const [sourceOverrides,setSourceOverrides]=useState(()=>load('inv_sourceOverrides',{}));
+  const {sourceOverrides,setSourceOverrides}=useSettings();
   const adjustSourceWeight=(source,delta)=>{
     setSourceOverrides(prev=>{
       const cur=prev[source]||1.0;
       const next=Math.max(0.25,Math.min(3.0,+(cur+delta).toFixed(2)));
       const updated={...prev,[source]:next};
       if(next===1.0) delete updated[source];
-      save('inv_sourceOverrides',updated);
       return updated;
     });
   };
-  const resetSourceOverrides=()=>{setSourceOverrides({});save('inv_sourceOverrides',{});};
+  const resetSourceOverrides=()=>{setSourceOverrides({});};
   const hasAppSourceOverrides=Object.keys(sourceOverrides).length>0;
   const [portfolioMetrics,setPortfolioMetrics]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
@@ -1899,7 +1962,7 @@ function DailyBrief(){
     try{
       const r=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({command:'live market pulse',mode:'quick',minScore:load('inv_minScore',65)}),
+        body:JSON.stringify({command:'live market pulse',mode:'quick',minScore:minScore}),
       });
       const d=await r.json();
       if(d.error){setAiCheckStatus('failed');return;}
@@ -1942,13 +2005,13 @@ function DailyBrief(){
       // Two-phase: data fetch → AI diagnosis
       const r1=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({mode:'diagnose',command:'evaluate performance',phase:'data',minScore:load('inv_minScore',65)})
+        body:JSON.stringify({mode:'diagnose',command:'evaluate performance',phase:'data',minScore:minScore})
       });
       const dataResult=await r1.json();
       if(dataResult.error){setEvalStatus('error');return;}
       const r2=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance',minScore:load('inv_minScore',65)})
+        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance',minScore:minScore})
       });
       const d=await r2.json();
       if(d.parseError){setEvalStatus('error');return;}
@@ -1994,7 +2057,7 @@ function DailyBrief(){
         if((rec.category==='scoring'||rec.category==='regime')&&rec.suggestedMinScore){
           const newMin=Number(rec.suggestedMinScore);
           if(newMin>0&&newMin!==minScore){
-            updateMinScore(newMin);
+            setMinScore(newMin);
           }
         }
       }
@@ -2042,13 +2105,13 @@ function DailyBrief(){
       // Two-phase: data fetch → AI consistency runs
       const r1=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({mode:'consistency',command:'evaluate performance',n:consistencyN,phase:'data',minScore:load('inv_minScore',65)})
+        body:JSON.stringify({mode:'consistency',command:'evaluate performance',n:consistencyN,phase:'data',minScore:minScore})
       });
       const dataResult=await r1.json();
       if(dataResult.error){clearInterval(progInterval);setConsistencyStatus('done');setConsistencyReport({error:dataResult.error});return;}
       const r=await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance',minScore:load('inv_minScore',65)})
+        body:JSON.stringify({phase:'ai',...dataResult,command:'evaluate performance',minScore:minScore})
       });
       clearInterval(progInterval);
       const d=await r.json();
@@ -2336,7 +2399,7 @@ function DailyBrief(){
                   style={{background:'#3b82f618',color:'#60a5fa',border:'1px solid #3b82f633'}}>
                   ↻ Refresh
                 </button>
-                {load('tradingMode','dry-run')==='dry-run'&&<button onClick={async(e)=>{
+                {tradingMode==='dry-run'&&<button onClick={async(e)=>{
                   if(!confirm('Purge all SIMULATION positions and drafts? This will:\n• Create SELL transactions to return cash to your wallet\n• Archive all paper trades and drafts in Notion\n\nThis cannot be undone.'))return;
                   const btn=e.currentTarget;btn.disabled=true;btn.textContent='🗑️ Purging…';
                   try{
@@ -3250,7 +3313,7 @@ function App(){
   return<DailyBrief/>;
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<ErrorBoundary><App/></ErrorBoundary>);
+ReactDOM.createRoot(document.getElementById('root')).render(<ErrorBoundary><SettingsProvider><App/></SettingsProvider></ErrorBoundary>);
 </script>
 </body>
 </html>
