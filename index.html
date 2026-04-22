@@ -267,7 +267,7 @@ const SOURCE_META={
   'CNN Fear & Greed':{icon:'😱',color:'#6366f1'},
   'World Monitor':{icon:'🌍',color:'#94a3b8'},
   'Earnings Calendar':{icon:'📅',color:'#f97316'},
-  'Insider Activity':{icon:'🕵️',color:'#ef4444'},
+  'Quiver Quantitative':{icon:'🕵️',color:'#ef4444'},
   'Sector Momentum':{icon:'📈',color:'#14b8a6'},
 };
 const VERDICT_COLOR={BULLISH:'#22c55e',BEARISH:'#ef4444',NEUTRAL:'#94a3b8',NO_DATA:'#374151'};
@@ -1480,8 +1480,11 @@ function AnalysisPanel({onPositionsUpdate}){
             else if(ss.capitolTrades==='failed')failures.push({name:'Capitol Trades',icon:'🏛️',detail:'Returned 0 trades — page structure may have changed'});
             if(ss.fearGreed==='failed')failures.push({name:'Fear & Greed',icon:'😱',detail:se.filter(e=>e.source==='World Monitor'&&e.error.includes('Fear')).map(e=>e.error).join('; ')||'Composite index unavailable'});
             if(ss.finnhubPrice==='failed')failures.push({name:'SPY Price',icon:'💲',detail:se.filter(e=>e.source==='Market Data'&&e.error.includes('SPY')).map(e=>e.error).join('; ')||'Finnhub SPY quote failed'});
+            if(ss.quiverQuantitative==='error')failures.push({name:'Quiver Quantitative',icon:'📊',detail:se.filter(e=>e.source==='Quiver Quantitative').map(e=>e.error).join('; ')||'All Quiver scrapers failed'});
+            else if(ss.quiverQuantitative==='partial')failures.push({name:'Quiver Quantitative',icon:'📊',detail:'Some Quiver datasets failed: '+se.filter(e=>e.source==='Quiver Quantitative').map(e=>e.error).join('; ')});
+            else if(ss.quiverQuantitative==='empty')failures.push({name:'Quiver Quantitative',icon:'📊',detail:'All 4 datasets returned 0 records — page structures may have changed'});
             // Also show any additional errors not covered above
-            const coveredSources=new Set(['Market Data','World Monitor','Finviz','Capitol Trades']);
+            const coveredSources=new Set(['Market Data','World Monitor','Finviz','Capitol Trades','Quiver Quantitative']);
             const uncovered=se.filter(e=>!coveredSources.has(e.source));
             uncovered.forEach(e=>failures.push({name:e.source,icon:'⚠️',detail:e.error}));
             if(!failures.length)return null;

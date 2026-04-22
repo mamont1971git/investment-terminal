@@ -17,7 +17,7 @@ const SOURCES = [
   'Earnings Calendar',
   'Sector Momentum',
   'World Monitor',
-  'Insider Activity',
+  'Quiver Quantitative',
 ];
 
 const DEFAULT_ETA = 0.15; // learning rate

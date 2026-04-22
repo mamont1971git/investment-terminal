@@ -59,6 +59,125 @@ async function fetchFinvizSignals() {
   return results;
 }
 
+// ── Quiver Quantitative: congressional trades, gov contracts, lobbying, insider ──
+async function fetchQuiverData() {
+  const results = { congressTrades: [], govContracts: [], lobbying: [], insiderTrades: [], _errors: [] };
+
+  const parseTableRows = (html, maxRows) => {
+    const rows = [];
+    const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+    let m, count = 0;
+    while ((m = rowPattern.exec(html)) !== null && count < maxRows) {
+      const cells = [];
+      const cellPattern = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+      let c;
+      while ((c = cellPattern.exec(m[1])) !== null) {
+        cells.push(c[1].replace(/<[^>]+>/g, '').trim());
+      }
+      if (cells.length >= 3) { rows.push(cells); count++; }
+    }
+    return rows;
+  };
+
+  const parseInlineJS = (html) => {
+    // Quiver often stores data in inline script vars
+    const scriptMatch = html.match(/var\s+data\s*=\s*(\[[\s\S]*?\]);/);
+    if (!scriptMatch) return null;
+    try { return JSON.parse(scriptMatch[1]); } catch { return null; }
+  };
+
+  const findTicker = (cells) => cells.find(c => /^[A-Z]{1,5}$/.test(c));
+  const findDate = (cells) => cells.find(c => /\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}/.test(c)) || '?';
+  const findAmount = (cells) => cells.find(c => /\$/.test(c)) || '?';
+  const findLongText = (cells, exclude) => cells.find(c => c.length > 5 && !/^[A-Z]{1,5}$/.test(c) && !/\$/.test(c) && (!exclude || !exclude.test(c))) || '?';
+
+  const pages = [
+    {
+      key: 'congressTrades', url: 'https://www.quiverquant.com/congresstrading/',
+      parseRows: (rows) => rows.map(cells => {
+        const ticker = findTicker(cells);
+        if (!ticker) return null;
+        return { ticker, politician: cells[0] !== ticker ? cells[0] : cells[1] || '?',
+          type: cells.find(c => /buy|sell|purchase|sale/i.test(c)) || '?',
+          amount: findAmount(cells), date: findDate(cells) };
+      }).filter(Boolean).slice(0, 25),
+      parseJS: (data) => data.slice(0, 20).map(d => {
+        const tk = (d.Ticker || d.ticker || '').toUpperCase();
+        return tk ? { ticker: tk, politician: d.Representative || d.politician || '?',
+          type: d.Transaction || d.type || '?', amount: d.Amount || d.amount || '?',
+          date: d.Date || d.date || '?' } : null;
+      }).filter(Boolean),
+    },
+    {
+      key: 'govContracts', url: 'https://www.quiverquant.com/governmentcontracts/',
+      parseRows: (rows) => rows.map(cells => {
+        const ticker = findTicker(cells);
+        if (!ticker) return null;
+        return { ticker, agency: findLongText(cells), amount: findAmount(cells),
+          date: findDate(cells), description: cells.find(c => c.length > 20) || '' };
+      }).filter(Boolean).slice(0, 15),
+      parseJS: (data) => data.slice(0, 15).map(d => {
+        const tk = (d.Ticker || d.ticker || '').toUpperCase();
+        return tk ? { ticker: tk, agency: d.Agency || d.agency || '?',
+          amount: d.Amount || d.amount || '?', date: d.Date || d.date || '?',
+          description: d.Description || '' } : null;
+      }).filter(Boolean),
+    },
+    {
+      key: 'lobbying', url: 'https://www.quiverquant.com/lobbying/',
+      parseRows: (rows) => rows.map(cells => {
+        const ticker = findTicker(cells);
+        if (!ticker) return null;
+        return { ticker, issue: findLongText(cells), amount: findAmount(cells), date: findDate(cells) };
+      }).filter(Boolean).slice(0, 15),
+      parseJS: (data) => data.slice(0, 15).map(d => {
+        const tk = (d.Ticker || d.ticker || '').toUpperCase();
+        return tk ? { ticker: tk, issue: d.Issue || d.issue || '?',
+          amount: d.Amount || d.amount || '?', date: d.Date || d.date || '?' } : null;
+      }).filter(Boolean),
+    },
+    {
+      key: 'insiderTrades', url: 'https://www.quiverquant.com/insidertrading/',
+      parseRows: (rows) => rows.map(cells => {
+        const ticker = findTicker(cells);
+        if (!ticker) return null;
+        return { ticker, insider: findLongText(cells, /buy|sell/i),
+          type: cells.find(c => /buy|sell|purchase|sale|acquisition|disposition/i.test(c)) || '?',
+          shares: cells.find(c => /^\d[\d,]*$/.test(c)) || '?',
+          value: findAmount(cells), date: findDate(cells) };
+      }).filter(Boolean).slice(0, 20),
+      parseJS: (data) => data.slice(0, 20).map(d => {
+        const tk = (d.Ticker || d.ticker || '').toUpperCase();
+        return tk ? { ticker: tk, insider: d.Insider || d.insider || d.Name || '?',
+          type: d.Transaction || d.type || '?', shares: String(d.Shares || d.shares || '?'),
+          value: d.Value || d.value || '?', date: d.Date || d.date || '?' } : null;
+      }).filter(Boolean),
+    },
+  ];
+
+  await Promise.all(pages.map(async ({ key, url, parseRows, parseJS }) => {
+    try {
+      const r = await httpsGet(url, {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'text/html',
+      });
+      if (r.status !== 200) { results._errors.push(`${key}: HTTP ${r.status}`); return; }
+      // Try table parsing first, then inline JS fallback
+      const tableData = parseRows(parseTableRows(r.body, 30));
+      if (tableData.length > 0) { results[key] = tableData; return; }
+      const jsData = parseInlineJS(r.body);
+      if (jsData) { results[key] = parseJS(jsData); return; }
+      // Got HTML but nothing parsed
+      if (r.body.length > 500) {
+        results._errors.push(`${key}: HTML received but 0 records parsed — page structure may have changed`);
+      }
+    } catch (e) { results._errors.push(`${key}: ${e.message || 'fetch failed'}`); }
+  }));
+
+  results._errors = results._errors.length > 0 ? results._errors : null;
+  return results;
+}
+
 // ── Capitol Trades: live congressional stock trading data ──────────────
 async function fetchCapitolTrades() {
   try {
@@ -785,7 +904,7 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
 
   // Fetch context — quick mode skips closed trades and limits TA
   const isQuick = mode === 'quick' && !isAssessMode;
-  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals, capitolTradesRaw, approvedTunings] = await Promise.all([
+  const [market, openTrades, closedTrades, worldMonitor, walletState, finvizSignals, capitolTradesRaw, approvedTunings, quiverData] = await Promise.all([
     fetchMarketData(),
     NOTION_TOKEN ? fetchOpenTrades(NOTION_TOKEN) : Promise.resolve([]),
     (!isQuick && NOTION_TOKEN) ? fetchRecentClosed(NOTION_TOKEN) : Promise.resolve([]),
@@ -794,6 +913,7 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
     (isDiscoverMode || mode === 'full') ? fetchFinvizSignals() : Promise.resolve(null),
     (!isQuick) ? fetchCapitolTrades() : Promise.resolve({ trades: [], _error: null }),
     (!isQuick && !isDiagnoseMode && NOTION_TOKEN) ? fetchApprovedTunings(NOTION_TOKEN) : Promise.resolve([]),
+    (mode === 'full' || isDiscoverMode) ? fetchQuiverData() : Promise.resolve({ congressTrades: [], govContracts: [], lobbying: [], insiderTrades: [], _errors: null }),
   ]);
   // Unwrap Capitol Trades (now returns {trades, _error})
   const capitolTrades = capitolTradesRaw.trades || capitolTradesRaw || [];
@@ -806,6 +926,7 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
   if (worldMonitor._errors && worldMonitor._errors.length > 0) worldMonitor._errors.forEach(e => sourceErrors.push({ source: 'World Monitor', error: e }));
   if (finvizFetchErrors) finvizFetchErrors.forEach(e => sourceErrors.push({ source: 'Finviz', error: e }));
   if (capitolTradesError) sourceErrors.push({ source: 'Capitol Trades', error: capitolTradesError });
+  if (quiverData._errors) quiverData._errors.forEach(e => sourceErrors.push({ source: 'Quiver Quantitative', error: e }));
 
   // Persist to Notion Error Log — fire-and-forget, never blocks response
   if (sourceErrors.length > 0 && NOTION_TOKEN) {
@@ -896,10 +1017,20 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
   const openTickers = openFormatted.map(t => t.ticker).filter(Boolean);
   const taTickers = ['SPY', ...openTickers];
   if (assessTicker && !taTickers.includes(assessTicker)) taTickers.push(assessTicker);
-  // In discover mode, fetch TA for top screener candidates
+  // In discover mode, fetch TA for top screener candidates (Finviz + Quiver)
   if (finvizSignals) {
     const allScreenerTickers = [...new Set(Object.entries(finvizSignals).filter(([k])=>k!=='_errors').flatMap(([,v])=>v||[]))];
     for (const t of allScreenerTickers.slice(0, 4)) { // limit to 4 to stay within 60s timeout
+      if (!taTickers.includes(t)) taTickers.push(t);
+    }
+  }
+  // Add Quiver multi-signal tickers (appear in 2+ Quiver datasets) to TA fetch list
+  if (quiverData && (mode === 'full' || isDiscoverMode)) {
+    const qTickers = {};
+    [...quiverData.congressTrades, ...quiverData.insiderTrades, ...quiverData.govContracts, ...quiverData.lobbying]
+      .forEach(t => { if (t.ticker) qTickers[t.ticker] = (qTickers[t.ticker]||0)+1; });
+    const multiSignalQ = Object.entries(qTickers).filter(([,c]) => c >= 2).sort((a,b) => b[1]-a[1]).slice(0, 3);
+    for (const [t] of multiSignalQ) {
       if (!taTickers.includes(t)) taTickers.push(t);
     }
   }
@@ -1003,6 +1134,11 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
     earningsCalendar: wm.earningsCalendar && wm.earningsCalendar.length > 0 ? 'ok' : 'empty',
     fearGreed: wm.fearGreed ? 'ok' : 'failed',
     finnhubPrice: market.spyPrice ? 'ok' : 'failed',
+    quiverQuantitative: (mode === 'full' || isDiscoverMode)
+      ? ((quiverData.congressTrades.length + quiverData.govContracts.length + quiverData.insiderTrades.length + quiverData.lobbying.length) > 0
+        ? (quiverData._errors ? 'partial' : 'ok')
+        : (quiverData._errors ? 'error' : 'empty'))
+      : 'skipped',
   };
 
   // Build market header (shared by both modes)
@@ -1022,6 +1158,7 @@ ${(()=>{
   if (wm._errors && wm._errors.length > 0) wm._errors.forEach(e => failed.push(e));
   if (finvizFetchErrors) finvizFetchErrors.forEach(e => failed.push(`Finviz ${e}`));
   if (capitolTradesError) failed.push(`Capitol Trades: ${capitolTradesError}`);
+  if (quiverData._errors) quiverData._errors.forEach(e => failed.push(`Quiver ${e}`));
   if (failed.length === 0) return '';
   return `⚠️ DATA SOURCE FAILURES (${failed.length}):
 ${failed.map(f => `  ❌ ${f}`).join('\n')}
@@ -1057,6 +1194,50 @@ ${(() => {
   return (overlap.length ? `⚠️ PORTFOLIO OVERLAP: ${overlap.join(', ')} — congress members also trading these\n` : '') +
          (buys.length >= 3 ? `📈 CLUSTER BUY SIGNAL: ${buys.length} congressional purchases detected — historically bullish\n` : '');
 })()}` : '🏛️ CAPITOL TRADES: Data unavailable — scraper returned no results\n'}
+
+${(()=>{
+  const qd = quiverData;
+  const hasData = qd.congressTrades.length + qd.govContracts.length + qd.insiderTrades.length + qd.lobbying.length > 0;
+  if (!hasData) return '📊 QUIVER QUANTITATIVE: Data unavailable — scraper returned no results\n';
+  let block = '📊 QUIVER QUANTITATIVE — ALTERNATIVE DATA INTELLIGENCE (quiverquant.com):\n';
+  if (qd.congressTrades.length > 0) {
+    block += `\n  CONGRESSIONAL TRADES (${qd.congressTrades.length}):\n`;
+    block += qd.congressTrades.map(t => `    ${t.type} ${t.ticker} — ${t.politician} | ${t.amount} | ${t.date}`).join('\n') + '\n';
+    // Cross-reference with Capitol Trades for stronger signal
+    const ctTickers = new Set(capitolTrades.map(t => t.ticker));
+    const overlap = qd.congressTrades.filter(t => ctTickers.has(t.ticker)).map(t => t.ticker);
+    const unique = [...new Set(overlap)];
+    if (unique.length > 0) block += `    🔗 CROSS-CONFIRMED with Capitol Trades: ${unique.join(', ')} — higher confidence signal\n`;
+  }
+  if (qd.insiderTrades.length > 0) {
+    block += `\n  INSIDER TRADING (${qd.insiderTrades.length}):\n`;
+    block += qd.insiderTrades.map(t => `    ${t.type} ${t.ticker} — ${t.insider} | ${t.shares} shares | ${t.value} | ${t.date}`).join('\n') + '\n';
+    // Flag cluster insider buying
+    const buyCounts = {};
+    qd.insiderTrades.filter(t => /buy|purchase|acquisition/i.test(t.type)).forEach(t => { buyCounts[t.ticker] = (buyCounts[t.ticker]||0)+1; });
+    const clusters = Object.entries(buyCounts).filter(([,c]) => c >= 2).map(([t,c]) => `${t}(${c}×)`);
+    if (clusters.length > 0) block += `    🔥 INSIDER CLUSTER BUYS: ${clusters.join(', ')} — multiple insiders buying = strong signal\n`;
+  }
+  if (qd.govContracts.length > 0) {
+    block += `\n  GOVERNMENT CONTRACTS (${qd.govContracts.length}):\n`;
+    block += qd.govContracts.slice(0, 10).map(t => `    ${t.ticker} — ${t.agency} | ${t.amount} | ${t.date}${t.description ? ' | '+t.description.slice(0,60) : ''}`).join('\n') + '\n';
+  }
+  if (qd.lobbying.length > 0) {
+    block += `\n  LOBBYING ACTIVITY (${qd.lobbying.length}):\n`;
+    block += qd.lobbying.slice(0, 10).map(t => `    ${t.ticker} — ${t.issue} | ${t.amount} | ${t.date}`).join('\n') + '\n';
+  }
+  // Summary: tickers appearing across multiple Quiver datasets
+  const allQuiverTickers = {};
+  qd.congressTrades.forEach(t => { allQuiverTickers[t.ticker] = (allQuiverTickers[t.ticker]||0)+1; });
+  qd.insiderTrades.forEach(t => { allQuiverTickers[t.ticker] = (allQuiverTickers[t.ticker]||0)+1; });
+  qd.govContracts.forEach(t => { allQuiverTickers[t.ticker] = (allQuiverTickers[t.ticker]||0)+1; });
+  qd.lobbying.forEach(t => { allQuiverTickers[t.ticker] = (allQuiverTickers[t.ticker]||0)+1; });
+  const multiSignal = Object.entries(allQuiverTickers).filter(([,c]) => c >= 2).sort((a,b) => b[1]-a[1]).slice(0, 5);
+  if (multiSignal.length > 0) {
+    block += `\n  🎯 MULTI-SIGNAL TICKERS (appear in 2+ Quiver datasets): ${multiSignal.map(([t,c]) => `${t}(${c})`).join(', ')}\n`;
+  }
+  return block;
+})()}
 
 OPEN PAPER TRADES (${openFormatted.length}):
 ${openFormatted.length ? openFormatted.map(t=>`- ${t.ticker} | ${t.strategy} | Entry: $${t.entry} | Stop: $${t.stop} | TP1: $${t.tp1} | Score: ${t.score} | Opened: ${t.dateOpened}`).join('\n') : 'None'}
@@ -1116,7 +1297,8 @@ RULES:
       sourceOverrideText = `\nUSER WEIGHT OVERRIDES (apply these multipliers when assigning signalAttribution weights — e.g. if a source normally gets 15% and has 1.5× override, give it ~22%): ${parts.join(', ')}. After applying multipliers, normalize so weights still sum to 100.`;
     }
   }
-  const attributionRulesText = `- Include "signalAttribution" array with ALL 7 sources: "Technical Analysis", "CNN Fear & Greed", "Capitol Trades", "Finviz Screener", "Earnings Calendar", "Sector Momentum", "World Monitor". Each: {source, weight(0-100, sum=100), signal(1 sentence), verdict(BULLISH/BEARISH/NEUTRAL/NO_DATA)}.
+  const attributionRulesText = `- Include "signalAttribution" array with ALL 8 sources: "Technical Analysis", "CNN Fear & Greed", "Capitol Trades", "Finviz Screener", "Earnings Calendar", "Sector Momentum", "World Monitor", "Quiver Quantitative". Each: {source, weight(0-100, sum=100), signal(1 sentence), verdict(BULLISH/BEARISH/NEUTRAL/NO_DATA)}.
+NOTE: "Quiver Quantitative" covers congressional trades (cross-ref with Capitol Trades), insider trading, government contracts, and lobbying data. If Quiver insider data confirms Capitol Trades signals for a ticker, boost both weights. "Insider Activity" is now merged INTO the "Quiver Quantitative" source — do NOT use a separate "Insider Activity" attribution.
 CRITICAL WEIGHT RULES:
 - Use NO_DATA (weight 0) ONLY when the data source itself failed to load or is completely unavailable.
 - If a source was checked but found no specific signal for this ticker, use verdict NEUTRAL with a small weight (3-8%) and explain what was checked (e.g. "Capitol Trades: No congressional activity for this ticker in recent filings" = NEUTRAL with weight 5, NOT NO_DATA).
@@ -1231,7 +1413,7 @@ Respond with JSON (no markdown):
 
 CRITICAL:
 - Use the COMPUTED technical indicators — reference specific RSI, MACD, Z-Score, Bollinger, Fibonacci values.
-- All 7 signal sources MUST appear in signalAttribution (NO_DATA sources get weight 0).
+- All 8 signal sources MUST appear in signalAttribution (NO_DATA sources get weight 0).
 - positionDollars must not exceed wallet cash ($${walletState.cashBalance.toFixed(2)}).
 - Be brutally honest. If the thesis is wrong, say so. Score below 40 = AVOID.
 ${attributionRulesText}` : null;
@@ -1247,6 +1429,18 @@ ${finvizSignals ? Object.entries(finvizSignals).filter(([k])=>k!=='_errors').map
   `  ${screen}: ${Array.isArray(tickers) && tickers.length ? tickers.join(', ') : 'none found'}`
 ).join('\n') : '  Screener data unavailable'}
 
+${(()=>{
+  const qd = quiverData;
+  const hasQData = qd.congressTrades.length + qd.insiderTrades.length + qd.govContracts.length + qd.lobbying.length > 0;
+  if (!hasQData) return 'QUIVER QUANTITATIVE: Data unavailable\n';
+  let qBlock = 'QUIVER QUANTITATIVE SIGNALS (live alternative data):\n';
+  if (qd.insiderTrades.length > 0) qBlock += `  Insider Trades: ${[...new Set(qd.insiderTrades.map(t=>t.ticker))].join(', ')}\n`;
+  if (qd.congressTrades.length > 0) qBlock += `  Congressional Trades: ${[...new Set(qd.congressTrades.map(t=>t.ticker))].join(', ')}\n`;
+  if (qd.govContracts.length > 0) qBlock += `  Gov Contracts: ${[...new Set(qd.govContracts.map(t=>t.ticker))].join(', ')}\n`;
+  if (qd.lobbying.length > 0) qBlock += `  Lobbying: ${[...new Set(qd.lobbying.map(t=>t.ticker))].join(', ')}\n`;
+  return qBlock;
+})()}
+
 ${Object.keys(taData).filter(t => t !== 'SPY' && !openTickers.includes(t)).length > 0 ?
   'TECHNICAL DATA FOR SCREENER CANDIDATES:\n' +
   Object.entries(taData).filter(([t]) => t !== 'SPY' && !openTickers.includes(t))
@@ -1261,8 +1455,8 @@ YOUR TASK: Identify 3-5 UNDERRATED stocks that are:
 3. Aligned with current macro regime and sector rotation
 4. Within wallet budget ($${walletState.cashBalance.toFixed(2)} available cash)
 
-For EACH candidate, use the Finviz screener data, World Monitor intelligence, and computed TA indicators.
-Cross-reference: a stock appearing in multiple screener categories is a stronger signal.
+For EACH candidate, use the Finviz screener data, Quiver Quantitative signals, World Monitor intelligence, and computed TA indicators.
+Cross-reference: a stock appearing in multiple screener categories OR in both Finviz and Quiver is a stronger signal.
 
 Respond with JSON (no markdown):
 {
