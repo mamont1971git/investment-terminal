@@ -81,7 +81,9 @@ module.exports = async (req, res) => {
     let closeReason = null;
     let newStatus = null;
 
-    if (currentPrice <= stopLoss) {
+    // Guard: if stopLoss === entryPrice exactly, it's likely from the old tighten bug — use original -7% stop
+    const effectiveStop = (stopLoss === entryPrice) ? +(entryPrice * 0.93).toFixed(2) : stopLoss;
+    if (currentPrice <= effectiveStop) {
       closeReason = 'Stopped Out'; newStatus = 'Stopped Out';
     } else if (currentPrice >= tp2) {
       closeReason = 'Hit TP2'; newStatus = 'Closed';

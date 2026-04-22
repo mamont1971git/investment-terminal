@@ -770,7 +770,13 @@ module.exports = async (req, res) => {
     } else if (currentPrice && t.tp1 && currentPrice >= t.tp1) {
       recommendation = 'TAKE_PROFIT'; urgency = 'watch';
     } else if (daysHeld >= 8) {
-      recommendation = 'TIGHTEN_STOP'; urgency = 'watch';
+      // Only recommend tighten if position is profitable (smart stop logic)
+      const pnlPct = currentPrice && t.entryPrice ? ((currentPrice - t.entryPrice) / t.entryPrice * 100) : 0;
+      if (pnlPct >= 0) {
+        recommendation = 'TIGHTEN_STOP'; urgency = 'watch';
+      } else {
+        recommendation = 'HOLD'; urgency = 'watch'; // losing + held long — hold but watch, don't tighten to breakeven
+      }
     }
 
     // Extract key TA indicators for the dashboard

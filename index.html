@@ -506,8 +506,27 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   const handleClose=async(action,label)=>{
     // Tighten stop is an update, not a close
     if(action==='tighten_stop'){
-      const newStop=t.entryPrice;
-      if(!confirm(`Tighten stop for ${t.ticker} to breakeven ($${fmt(newStop)})?\n\nThis updates the stop-loss in Notion.`))return;
+      // Smart stop tightening: only to breakeven if profitable enough
+      const pnlPct=t.currentPrice&&t.entryPrice?((t.currentPrice-t.entryPrice)/t.entryPrice*100):0;
+      const origStop=t.stop||t.stopLoss||(t.entryPrice*0.93);
+      let newStop;
+      if(pnlPct>=3){
+        // Profitable enough — tighten to breakeven
+        newStop=t.entryPrice;
+      } else if(pnlPct>=0){
+        // Slightly positive — tighten to midpoint between original stop and entry
+        newStop=+((origStop+t.entryPrice)/2).toFixed(2);
+      } else {
+        // Losing trade — keep original stop, don't tighten
+        alert(`${t.ticker} is down ${fmt(Math.abs(pnlPct),1)}% — tightening stop would make it worse. Keeping original stop at $${fmt(origStop)}.`);
+        return;
+      }
+      // Never set stop above current price
+      if(t.currentPrice&&newStop>=t.currentPrice){newStop=+(t.currentPrice*0.97).toFixed(2);}
+      // Never set stop below original stop (that would loosen it)
+      if(newStop<origStop)newStop=origStop;
+      const label=newStop===t.entryPrice?`breakeven ($${fmt(newStop)})`:`$${fmt(newStop)} (tightened from $${fmt(origStop)})`;
+      if(!confirm(`Tighten stop for ${t.ticker} to ${label}?\n\nP&L: ${pnlPct>=0?'+':''}${fmt(pnlPct,1)}%\nThis updates the stop-loss in Notion.`))return;
       setClosing(action);
       try{
         const r=await fetch('/api/get-positions',{
@@ -628,20 +647,23 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(_price)}`;
   } else if(_rec==='TIGHTEN_STOP'){
     verdict='TIGHTEN STOP';verdictIcon='🔧';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-    verdictReason=t.right?t.right.slice(0,120):`Tighten stop to breakeven ($${fmt(t.entry)}).${_earningsWarn}`;
-    primaryAction='tighten_stop';primaryLabel=`Tighten Stop → $${fmt(t.entry)}`;
+    const _smartStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||(t.entry*0.93);if(pnl>=3)return t.entry;if(pnl>=0)return+((orig+t.entry)/2).toFixed(2);return null;})();
+    verdictReason=_smartStop?`Held ${_daysHeld||'?'}d. ${_aboveEntry>=3?'Up enough for breakeven stop':'Tighten to midpoint'} → $${fmt(_smartStop)}.${_earningsWarn}`:`Down ${fmt(Math.abs(_aboveEntry||0),1)}%. Keep original stop at $${fmt(_stop)}.${_earningsWarn}`;
+    primaryAction=_smartStop?'tighten_stop':'hold';primaryLabel=_smartStop?`Tighten Stop → $${fmt(_smartStop)}`:'Hold — Keep Stop';
   } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3&&_aboveEntry<0){
     verdict='EXIT — EARNINGS RISK';verdictIcon='🚨';verdictColor='#ef4444';verdictBg='#1a0808';verdictBorder='#7f1d1d';
     verdictReason=`Down ${fmt(Math.abs(_aboveEntry),1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. System rule: exit losing positions before binary events.`;
     primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(_price)}`;
   } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3&&_aboveEntry>=0&&_aboveEntry<3){
     verdict='TIGHTEN — EARNINGS';verdictIcon='⚡';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-    verdictReason=`Up +${fmt(_aboveEntry,1)}% but thin cushion. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Tightening stop to breakeven.`;
-    primaryAction='tighten_stop';primaryLabel=`Tighten Stop → $${fmt(t.entry)}`;
+    const _earningsStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||(t.entry*0.93);if(pnl>=3)return t.entry;if(pnl>=0)return+((orig+t.entry)/2).toFixed(2);return null;})();
+    verdictReason=`Up +${fmt(_aboveEntry,1)}% but thin cushion. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. ${_earningsStop?`Tightening stop to $${fmt(_earningsStop)}.`:'Keep original stop.'}`;
+    primaryAction=_earningsStop?'tighten_stop':'hold';primaryLabel=_earningsStop?`Tighten Stop → $${fmt(_earningsStop)}`:'Hold — Keep Stop';
   } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3){
     verdict='HOLD — EARNINGS WATCH';verdictIcon='⚡';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
-    verdictReason=`Up +${fmt(_aboveEntry,1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Good cushion — holding with tightened stop.`;
-    primaryAction='tighten_stop';primaryLabel=`Tighten Stop → $${fmt(t.entry)}`;
+    const _earningsWatchStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||(t.entry*0.93);if(pnl>=3)return t.entry;if(pnl>=0)return+((orig+t.entry)/2).toFixed(2);return null;})();
+    verdictReason=`Up +${fmt(_aboveEntry,1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Good cushion — ${_earningsWatchStop?`tightening stop to $${fmt(_earningsWatchStop)}.`:'holding with current stop.'}`;
+    primaryAction=_earningsWatchStop?'tighten_stop':'hold';primaryLabel=_earningsWatchStop?`Tighten Stop → $${fmt(_earningsWatchStop)}`:'Hold — Keep Stop';
   } else if(_aboveEntry>=0){
     verdict='DO NOTHING';verdictIcon='✅';verdictColor='#60a5fa';verdictBg='#0c1425';verdictBorder='#1e3a5f';
     verdictReason=_toTp1!=null?`Up +${fmt(_aboveEntry,1)}%. Target is ${fmt(_toTp1,1)}% away. Let it run.`:`Up +${fmt(_aboveEntry,1)}%. Let it run.`;
@@ -1812,6 +1834,22 @@ function DailyBrief(){
   const histCanvasRef=useRef(null);
   const [consistencyN,setConsistencyN]=useState(3);
   const [consistencyStatus,setConsistencyStatus]=useState('idle'); // idle|running|done
+  const [sourceHealth,setSourceHealth]=useState(null);
+  const [healthStatus,setHealthStatus]=useState('idle'); // idle|loading|done|failed
+
+  const fetchSourceHealth=useCallback(async()=>{
+    if(window.location.protocol==='file:')return;
+    setHealthStatus('loading');
+    try{
+      const r=await fetch('/api/source-health');
+      const d=await r.json();
+      setSourceHealth(d);
+      setHealthStatus('done');
+    }catch(e){
+      console.error('Source health check failed:',e);
+      setHealthStatus('failed');
+    }
+  },[]);
   const [consistencyReport,setConsistencyReport]=useState(null);
   const [consistencyProgress,setConsistencyProgress]=useState(0);
 
@@ -1986,7 +2024,7 @@ function DailyBrief(){
     }catch(e){setAiCheckStatus('failed');}
   },[]);
 
-  useEffect(()=>{refresh();fetchPositions();},[]);
+  useEffect(()=>{refresh();fetchPositions();fetchSourceHealth();},[]);
   // Auto-run quick check once positions are loaded
   useEffect(()=>{
     if(posStatus==='done'&&positions.length>0&&aiCheckStatus==='idle'){
@@ -2534,7 +2572,7 @@ function DailyBrief(){
               </div>
               <div className="flex justify-center gap-4 mt-3 text-xs text-gray-600">
                 {['Technical Analysis','World Monitor','Finviz Screener','CNN Fear & Greed',
-                  'Capitol Trades','Earnings Calendar','Sector Momentum'].map((s,i)=>(
+                  'Capitol Trades','Earnings Calendar','Sector Momentum','Quiver Quantitative'].map((s,i)=>(
                   <span key={i} className="px-2 py-1 rounded-full"
                     style={{background:'#1e2d4a',color:'#64748b',fontSize:10,whiteSpace:'nowrap'}}>{s}</span>
                 ))}
@@ -2573,10 +2611,10 @@ function DailyBrief(){
           )}
 
           {/* Signal source rankings with override controls */}
-          {sourceWeights&&sourceWeights.ranked&&sourceWeights.ranked.some(s=>s.totalTrades>0)&&(
+          {sourceWeights&&sourceWeights.ranked&&(
             <div className="px-4 py-3"style={{borderBottom:'1px solid #0f1828'}}>
               <div className="text-xs text-gray-500 mb-2 font-semibold flex items-center justify-between">
-                <span>Signal Source Rankings <span className="text-gray-600">(MWU)</span>
+                <span>Signal Source Rankings <span className="text-gray-600">(MWU — {sourceWeights.tradesAnalyzed} trades)</span>
                   {hasAppSourceOverrides&&<span className="ml-2 text-yellow-500">⚙️ overrides active</span>}
                 </span>
                 {hasAppSourceOverrides&&(
@@ -2585,25 +2623,28 @@ function DailyBrief(){
                 )}
               </div>
               <div className="space-y-2">
-                {sourceWeights.ranked.filter(s=>s.totalTrades>0).map((s,i)=>{
-                  const barColor=s.winRate>=60?'#22c55e':s.winRate>=45?'#f59e0b':'#ef4444';
-                  const confDot=s.confidence==='high'?'#22c55e':s.confidence==='medium'?'#f59e0b':'#94a3b8';
+                {sourceWeights.ranked.map((s,i)=>{
+                  const hasData=s.totalTrades>0;
+                  const barColor=!hasData?'#374151':s.winRate>=60?'#22c55e':s.winRate>=45?'#f59e0b':'#ef4444';
+                  const confDot=s.confidence==='high'?'#22c55e':s.confidence==='medium'?'#f59e0b':s.confidence==='low'?'#94a3b8':'#374151';
                   const mult=sourceOverrides[s.source]||1.0;
                   const isOverridden=mult!==1.0;
                   const effectiveWeight=+(s.weight*mult).toFixed(1);
+                  const meta=SOURCE_META[s.source]||{icon:'📡',color:'#94a3b8'};
                   return(
-                    <div key={i} className="flex items-center gap-1 text-xs">
+                    <div key={i} className="flex items-center gap-1 text-xs"style={{opacity:hasData?1:0.5}}>
                       <span className="w-5 text-right font-bold text-gray-600">#{s.rank}</span>
-                      <span className="w-28 truncate font-semibold"style={{color:isOverridden?'#f59e0b':'#d1d5db'}}
-                        title={isOverridden?`Override: ${mult}× (base ${s.weight}%)`:''}>{s.source}</span>
+                      <span style={{fontSize:'11px',width:'16px',textAlign:'center'}}>{meta.icon}</span>
+                      <span className="w-28 truncate font-semibold"style={{color:isOverridden?'#f59e0b':hasData?'#d1d5db':'#4b5563'}}
+                        title={!hasData?'No closed trades attributed yet — will rank after first trade closes':(isOverridden?`Override: ${mult}× (base ${s.weight}%)`:'')}>{s.source}</span>
                       <div className="flex-1 h-2 rounded-full overflow-hidden"style={{background:'#1e2d4a'}}>
-                        <div className="h-full rounded-full transition-all"style={{width:`${Math.min(effectiveWeight,100)}%`,background:isOverridden?'#f59e0b':barColor}}/>
+                        <div className="h-full rounded-full transition-all"style={{width:hasData?`${Math.min(effectiveWeight,100)}%`:'0%',background:isOverridden?'#f59e0b':barColor}}/>
                       </div>
                       <span className="w-12 text-right font-bold"style={{color:isOverridden?'#f59e0b':barColor}}>
-                        {isOverridden?effectiveWeight:s.weight}%
+                        {hasData?(isOverridden?effectiveWeight:s.weight)+'%':'—'}
                       </span>
-                      <span className="w-14 text-right text-gray-500">{s.winRate}% W/R</span>
-                      <span className="w-10 text-right text-gray-600">{s.wins}W/{s.losses}L</span>
+                      <span className="w-14 text-right"style={{color:hasData?'#94a3b8':'#374151'}}>{hasData?`${s.winRate}% W/R`:'no data'}</span>
+                      <span className="w-10 text-right text-gray-600">{hasData?`${s.wins}W/${s.losses}L`:''}</span>
                       <span className="w-2 h-2 rounded-full"style={{background:confDot}}
                         title={`Confidence: ${s.confidence}`}/>
                       {/* Override controls */}
@@ -2622,13 +2663,48 @@ function DailyBrief(){
                   );
                 })}
               </div>
-              {sourceWeights.ranked.filter(s=>s.totalTrades===0).length>0&&(
-                <div className="text-xs text-gray-600 mt-2">
-                  No data yet: {sourceWeights.ranked.filter(s=>s.totalTrades===0).map(s=>s.source).join(', ')}
-                </div>
-              )}
             </div>
           )}
+
+          {/* ── SOURCE HEALTH MONITOR ── */}
+          <div className="px-4 py-3"style={{borderBottom:'1px solid #0f1828'}}>
+            <div className="text-xs text-gray-500 mb-2 font-semibold flex items-center justify-between">
+              <span>Data Source Health
+                {sourceHealth&&<span className="ml-2"style={{color:sourceHealth.overallStatus==='healthy'?'#22c55e':sourceHealth.overallStatus==='degraded'?'#f59e0b':'#ef4444'}}>
+                  {sourceHealth.overallStatus==='healthy'?'● All OK':sourceHealth.overallStatus==='degraded'?`● ${sourceHealth.failed} failed`:`● ${sourceHealth.failed} critical`}
+                </span>}
+              </span>
+              <button onClick={fetchSourceHealth}
+                className="text-gray-600 hover:text-gray-400 text-xs"
+                style={{fontSize:'10px'}}
+                disabled={healthStatus==='loading'}>
+                {healthStatus==='loading'?'checking...':'↻ Check now'}
+              </button>
+            </div>
+            {sourceHealth&&sourceHealth.sources?(
+              <div className="grid gap-1">
+                {sourceHealth.sources.map((s,i)=>{
+                  const color=s.status==='ok'?'#22c55e':s.status==='degraded'?'#f59e0b':'#ef4444';
+                  const icon=s.status==='ok'?'✓':s.status==='degraded'?'⚠':'✗';
+                  return(
+                    <div key={i} className="flex items-center gap-2 text-xs py-0.5">
+                      <span style={{color,fontWeight:'bold',width:'12px',textAlign:'center'}}>{icon}</span>
+                      <span className="w-36 truncate"style={{color:s.status==='ok'?'#d1d5db':'#fca5a5'}}>{s.source}</span>
+                      <span className="text-gray-600 w-14 text-right">{s.latencyMs}ms</span>
+                      <span className="text-gray-600 w-16 text-right">{s.records>0?`${s.records} rec`:'—'}</span>
+                      {s.error&&<span className="text-red-500 truncate flex-1"style={{fontSize:'10px'}}>{s.error}</span>}
+                    </div>
+                  );
+                })}
+                <div className="text-xs text-gray-600 mt-1 flex gap-4">
+                  <span>Avg latency: {sourceHealth.avgLatencyMs}ms</span>
+                  <span>Last check: {new Date(sourceHealth.checkedAt).toLocaleTimeString()}</span>
+                </div>
+              </div>
+            ):(
+              <div className="text-xs text-gray-600">{healthStatus==='loading'?'Running health checks...':'Click "Check now" to test all data sources'}</div>
+            )}
+          </div>
 
           {/* ── IMPROVEMENT TREND ── */}
           {evalHistory.length>0&&(
