@@ -94,6 +94,31 @@ async function fetchQuiverData() {
     try { return JSON.parse(scriptMatch[1]); } catch { return null; }
   };
 
+  // Parse card-based layout (gov-spending uses .gov-transaction cards, not tables)
+  const parseCards = (html, maxCards) => {
+    const entries = [];
+    const cardPattern = /gov-transaction-inner">([\s\S]*?)<\/li>/gi;
+    let m;
+    while ((m = cardPattern.exec(html)) !== null && entries.length < maxCards) {
+      const block = m[1];
+      const tickerMatch = block.match(/\/stock\/([A-Z]{1,5})/);
+      const amountMatch = block.match(/class="amount"[^>]*>\s*\$?([\d,]+)/);
+      const dateMatch = block.match(/(\d{4}-\d{2}-\d{2})/);
+      const agencyMatch = block.match(/<h3>([^<]+)<span/);
+      const companyMatch = block.match(/paid\s*<\/span>([^<]+)/);
+      if (tickerMatch) {
+        entries.push({
+          ticker: tickerMatch[1],
+          agency: agencyMatch ? agencyMatch[1].trim() : '?',
+          company: companyMatch ? companyMatch[1].trim() : '?',
+          amount: amountMatch ? '$' + amountMatch[1] : '?',
+          date: dateMatch ? dateMatch[1] : '?',
+        });
+      }
+    }
+    return entries;
+  };
+
   const findTicker = (cells) => cells.find(c => /^[A-Z]{1,5}$/.test(c));
   const findDate = (cells) => cells.find(c => /\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}/.test(c)) || '?';
   const findAmount = (cells) => cells.find(c => /\$/.test(c)) || '?';
@@ -170,11 +195,16 @@ async function fetchQuiverData() {
         'Accept': 'text/html',
       });
       if (r.status !== 200) { results._errors.push(`${key}: HTTP ${r.status}`); return; }
-      // Try table parsing first, then inline JS fallback
+      // Try table parsing first, then inline JS, then card-based layout
       const tableData = parseRows(parseTableRows(r.body, 30));
       if (tableData.length > 0) { results[key] = tableData; return; }
       const jsData = parseInlineJS(r.body);
       if (jsData) { results[key] = parseJS(jsData); return; }
+      // Card-based layout fallback (gov-spending uses .gov-transaction cards)
+      if (r.body.includes('gov-transaction')) {
+        const cardData = parseCards(r.body, 15);
+        if (cardData.length > 0) { results[key] = cardData; return; }
+      }
       // Got HTML but nothing parsed
       if (r.body.length > 500) {
         results._errors.push(`${key}: HTML received but 0 records parsed — page structure may have changed`);
