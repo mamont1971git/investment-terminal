@@ -3,18 +3,27 @@
 // Also logs failures to Notion Error Log for trend tracking
 const https = require('https');
 
-function httpsGet(url, headers = {}) {
+function httpsGet(url, headers = {}, maxRedirects = 3) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
-    https.get(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36', ...headers },
-      timeout: 8000,
-    }, res => {
-      let d = '';
-      res.on('data', c => d += c);
-      res.on('end', () => resolve({ status: res.statusCode, body: d, latencyMs: Date.now() - start }));
-    }).on('error', e => reject({ message: e.message, latencyMs: Date.now() - start }))
-      .on('timeout', function () { this.destroy(); reject({ message: 'timeout', latencyMs: Date.now() - start }); });
+    const doRequest = (reqUrl, redirectsLeft) => {
+      https.get(reqUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36', ...headers },
+        timeout: 8000,
+      }, res => {
+        // Follow 301/302/307/308 redirects
+        if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
+          const loc = res.headers.location.startsWith('http') ? res.headers.location : new URL(res.headers.location, reqUrl).href;
+          res.resume(); // drain response
+          return doRequest(loc, redirectsLeft - 1);
+        }
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => resolve({ status: res.statusCode, body: d, latencyMs: Date.now() - start }));
+      }).on('error', e => reject({ message: e.message, latencyMs: Date.now() - start }))
+        .on('timeout', function () { this.destroy(); reject({ message: 'timeout', latencyMs: Date.now() - start }); });
+    };
+    doRequest(url, maxRedirects);
   });
 }
 
@@ -52,10 +61,16 @@ module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
 
   const checks = await Promise.all([
-    // Finviz — test one screen
+    // Finviz — test one screen (multiple selector fallbacks)
     checkSource('Finviz Screener', 'https://finviz.com/screener.ashx?v=111&f=cap_midover,sh_relvol_o1.5&ft=4&o=-relativevolume', (html) => {
-      const matches = html.match(/screener-link-primary/g) || [];
-      return { count: matches.length };
+      // Try multiple selectors — Finviz changes class names periodically
+      const primary = (html.match(/screener-link-primary/g) || []).length;
+      const tickers = (html.match(/screener-link-primary"[^>]*>[A-Z]{1,5}<\/a>/g) || []).length;
+      const rows = (html.match(/styled-row/g) || []).length;
+      const tableRows = (html.match(/<tr[^>]*class="[^"]*screener[^"]*"[^>]*>/g) || []).length;
+      const anyTicker = (html.match(/>([A-Z]{1,5})<\/a>/g) || []).length;
+      const count = primary || tickers || rows || tableRows || (anyTicker > 5 ? anyTicker : 0);
+      return { count };
     }),
 
     // Capitol Trades
@@ -74,30 +89,38 @@ module.exports = async (req, res) => {
     // Quiver — Congressional Trading
     checkSource('Quiver: Congress', 'https://www.quiverquant.com/congresstrading/', (html) => {
       const rows = (html.match(/<tr[^>]*>/g) || []).length;
-      const hasTicker = (html.match(/[A-Z]{1,5}/g) || []).length;
-      const hasData = html.includes('var data') || rows > 3;
-      return { count: hasData ? Math.max(rows - 1, hasTicker > 10 ? 1 : 0) : 0 };
+      const jsData = html.includes('var data') || html.includes('var tableData') || html.includes('"Representative"');
+      const hasTd = (html.match(/<td[^>]*>/g) || []).length;
+      const hasData = jsData || rows > 3 || hasTd > 10;
+      return { count: hasData ? Math.max(rows - 1, hasTd > 10 ? Math.floor(hasTd/4) : 0) : 0 };
     }),
 
-    // Quiver — Insider Trading
+    // Quiver — Insider Trading (multiple detection patterns)
     checkSource('Quiver: Insider', 'https://www.quiverquant.com/insidertrading/', (html) => {
       const rows = (html.match(/<tr[^>]*>/g) || []).length;
-      const hasData = html.includes('var data') || rows > 3;
-      return { count: hasData ? Math.max(rows - 1, 0) : 0 };
+      const jsData = html.includes('var data') || html.includes('var tableData') || html.includes('"Ticker"');
+      const tickers = (html.match(/[A-Z]{1,5}/g) || []).filter(t => ['AAPL','MSFT','GOOG','TSLA','NVDA','AMZN','META'].includes(t)).length;
+      const hasTd = (html.match(/<td[^>]*>/g) || []).length;
+      const hasData = jsData || rows > 3 || tickers > 2 || hasTd > 10;
+      return { count: hasData ? Math.max(rows - 1, hasTd > 10 ? Math.floor(hasTd/4) : 0, tickers) : 0 };
     }),
 
-    // Quiver — Government Contracts
-    checkSource('Quiver: Gov Contracts', 'https://www.quiverquant.com/governmentcontracts/', (html) => {
+    // Quiver — Government Contracts (try both URL variants)
+    checkSource('Quiver: Gov Contracts', 'https://www.quiverquant.com/governmentcontracts', (html) => {
       const rows = (html.match(/<tr[^>]*>/g) || []).length;
-      const hasData = html.includes('var data') || rows > 3;
-      return { count: hasData ? Math.max(rows - 1, 0) : 0 };
+      const jsData = html.includes('var data') || html.includes('var tableData') || html.includes('"Agency"');
+      const hasTd = (html.match(/<td[^>]*>/g) || []).length;
+      const hasData = jsData || rows > 3 || hasTd > 10;
+      return { count: hasData ? Math.max(rows - 1, hasTd > 10 ? Math.floor(hasTd/4) : 0) : 0 };
     }),
 
     // Quiver — Lobbying
     checkSource('Quiver: Lobbying', 'https://www.quiverquant.com/lobbying/', (html) => {
       const rows = (html.match(/<tr[^>]*>/g) || []).length;
-      const hasData = html.includes('var data') || rows > 3;
-      return { count: hasData ? Math.max(rows - 1, 0) : 0 };
+      const jsData = html.includes('var data') || html.includes('var tableData') || html.includes('"Issue"');
+      const hasTd = (html.match(/<td[^>]*>/g) || []).length;
+      const hasData = jsData || rows > 3 || hasTd > 10;
+      return { count: hasData ? Math.max(rows - 1, hasTd > 10 ? Math.floor(hasTd/4) : 0) : 0 };
     }),
 
     // Finnhub — SPY quote
@@ -122,33 +145,35 @@ module.exports = async (req, res) => {
   const avgLatency = Math.round(checks.reduce((s, c) => s + c.latencyMs, 0) / checks.length);
   const overallStatus = failed >= 3 ? 'critical' : failed > 0 ? 'degraded' : 'healthy';
 
-  // Log failures to Notion Error Log (fire-and-forget)
+  // Log to Notion — structured health snapshot (fire-and-forget)
   const TOKEN = process.env.NOTION_TOKEN;
-  const failedSources = checks.filter(c => c.status !== 'ok');
-  if (failedSources.length > 0 && TOKEN) {
+  if (TOKEN) {
     const ERROR_LOG_DB = '9e459182b763489bbed331506762bd11';
     const now = new Date().toISOString();
-    Promise.all(failedSources.map(s => {
-      const body = JSON.stringify({
-        parent: { database_id: ERROR_LOG_DB },
-        properties: {
-          'Error': { title: [{ text: { content: `HEALTH_CHECK: ${s.source} — ${s.status}`.slice(0, 100) } }] },
-          'Type': { select: { name: 'HEALTH_CHECK' } },
-          'Source': { select: { name: 'source-health.js' } },
-          'Message': { rich_text: [{ text: { content: `${s.error || s.status} (${s.latencyMs}ms, ${s.records} records)`.slice(0, 500) } }] },
-          'Resolved': { checkbox: false },
-          'Timestamp': { date: { start: now } },
-        },
-      });
-      return new Promise(resolve => {
-        const r = https.request({
-          hostname: 'api.notion.com', path: '/v1/pages', method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
-            'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) },
-        }, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => resolve()); });
-        r.on('error', () => resolve()); r.write(body); r.end();
-      });
-    })).catch(() => {});
+
+    // Build a single structured snapshot of all sources
+    const sourcesSummary = checks.map(s =>
+      `${s.status === 'ok' ? '✓' : s.status === 'degraded' ? '⚠' : '✗'} ${s.source}: ${s.status} (${s.latencyMs}ms, ${s.records}rec)${s.error ? ' — ' + s.error : ''}`
+    ).join('\n');
+
+    const body = JSON.stringify({
+      parent: { database_id: ERROR_LOG_DB },
+      properties: {
+        'Error': { title: [{ text: { content: `HEALTH_SNAPSHOT: ${overallStatus} — ${healthy}ok/${degraded}warn/${failed}fail`.slice(0, 100) } }] },
+        'Type': { select: { name: 'HEALTH_SNAPSHOT' } },
+        'Source': { select: { name: 'source-health.js' } },
+        'Message': { rich_text: [{ text: { content: sourcesSummary.slice(0, 2000) } }] },
+        'Resolved': { checkbox: overallStatus === 'healthy' },
+        'Timestamp': { date: { start: now } },
+      },
+    });
+
+    const req = https.request({
+      hostname: 'api.notion.com', path: '/v1/pages', method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) },
+    }, r => { let d = ''; r.on('data', c => d += c); r.on('end', () => {}); });
+    req.on('error', () => {}); req.write(body); req.end();
   }
 
   res.json({

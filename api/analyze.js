@@ -19,11 +19,19 @@ const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
 const TUNING_DB = 'c326714ad2b748878e94c473760c97e3';
 
 // ── helpers ──────────────────────────────────────────────────────────────
-function httpsGet(url, headers={}) {
+function httpsGet(url, headers={}, maxRedirects=3) {
   return new Promise((resolve,reject) => {
-    https.get(url,{headers:{'User-Agent':'Mozilla/5.0',...headers},timeout:5000},res=>{
-      let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve({status:res.statusCode,body:d}));
-    }).on('error',reject).on('timeout',function(){this.destroy();reject(new Error('timeout'));});
+    const doReq = (reqUrl, left) => {
+      https.get(reqUrl,{headers:{'User-Agent':'Mozilla/5.0',...headers},timeout:5000},res=>{
+        if ([301,302,307,308].includes(res.statusCode) && res.headers.location && left > 0) {
+          const loc = res.headers.location.startsWith('http') ? res.headers.location : new URL(res.headers.location, reqUrl).href;
+          res.resume();
+          return doReq(loc, left - 1);
+        }
+        let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve({status:res.statusCode,body:d}));
+      }).on('error',reject).on('timeout',function(){this.destroy();reject(new Error('timeout'));});
+    };
+    doReq(url, maxRedirects);
   });
 }
 
