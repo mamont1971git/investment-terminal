@@ -106,14 +106,17 @@ module.exports = async (req, res) => {
       return { count: hasData ? Math.max(rows - 1, hasTd > 10 ? Math.floor(hasTd/4) : 0, tickers) : 0 };
     }),
 
-    // Quiver — Government Spending (card-based layout, no tables)
-    checkSource('Quiver: Gov Contracts', 'https://www.quiverquant.com/government-spending/', (html) => {
-      // New layout uses .gov-transaction cards with h3, .amount, /stock/TICKER links
-      const cards = (html.match(/gov-transaction/g) || []).length;
-      const amounts = (html.match(/class="amount"/g) || []).length;
-      const stockLinks = (html.match(/\/stock\/[A-Z]{1,5}/g) || []).length;
-      const count = Math.max(cards, amounts, stockLinks);
-      return { count };
+    // Quiver — Government Spending (uses JSON API, not HTML tables)
+    checkSource('Quiver: Gov Contracts', 'https://www.quiverquant.com/get_gov_spending_data/', (body) => {
+      try {
+        const data = JSON.parse(body);
+        const txns = data.gov_transactions || [];
+        return { count: txns.length };
+      } catch {
+        // Fallback: check for gov-transaction in HTML if it's not JSON
+        const cards = (body.match(/gov-transaction/g) || []).length;
+        return { count: cards };
+      }
     }),
 
     // Quiver — Lobbying

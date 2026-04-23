@@ -142,19 +142,20 @@ async function fetchQuiverData() {
       }).filter(Boolean),
     },
     {
-      key: 'govContracts', url: 'https://www.quiverquant.com/government-spending/',
-      parseRows: (rows) => rows.map(cells => {
-        const ticker = findTicker(cells);
-        if (!ticker) return null;
-        return { ticker, agency: findLongText(cells), amount: findAmount(cells),
-          date: findDate(cells), description: cells.find(c => c.length > 20) || '' };
-      }).filter(Boolean).slice(0, 15),
-      parseJS: (data) => data.slice(0, 15).map(d => {
-        const tk = (d.Ticker || d.ticker || '').toUpperCase();
-        return tk ? { ticker: tk, agency: d.Agency || d.agency || '?',
-          amount: d.Amount || d.amount || '?', date: d.Date || d.date || '?',
-          description: d.Description || '' } : null;
-      }).filter(Boolean),
+      key: 'govContracts', url: 'https://www.quiverquant.com/get_gov_spending_data/',
+      // JSON API returns { gov_transactions: [[agency, company, date, ticker, amount, contractId, desc], ...] }
+      parseRows: () => [], // not used — parseJSON handles this
+      parseJS: () => [], // not used
+      parseJSON: (body) => {
+        try {
+          const data = JSON.parse(body);
+          return (data.gov_transactions || []).slice(0, 15).map(t => ({
+            ticker: t[3] || '?', agency: t[0] || '?', company: t[1] || '?',
+            date: t[2] || '?', amount: t[4] ? '$' + Number(t[4]).toLocaleString() : '?',
+            description: (t[6] || '').slice(0, 120),
+          })).filter(e => e.ticker && e.ticker !== '?');
+        } catch { return []; }
+      },
     },
     {
       key: 'lobbying', url: 'https://www.quiverquant.com/lobbying/',
@@ -188,13 +189,18 @@ async function fetchQuiverData() {
     },
   ];
 
-  await Promise.all(pages.map(async ({ key, url, parseRows, parseJS }) => {
+  await Promise.all(pages.map(async ({ key, url, parseRows, parseJS, parseJSON }) => {
     try {
       const r = await httpsGet(url, {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Accept': 'text/html',
+        'Accept': parseJSON ? 'application/json' : 'text/html',
       });
       if (r.status !== 200) { results._errors.push(`${key}: HTTP ${r.status}`); return; }
+      // If page has a direct JSON API parser, use it first
+      if (parseJSON) {
+        const jsonData = parseJSON(r.body);
+        if (jsonData.length > 0) { results[key] = jsonData; return; }
+      }
       // Try table parsing first, then inline JS, then card-based layout
       const tableData = parseRows(parseTableRows(r.body, 30));
       if (tableData.length > 0) { results[key] = tableData; return; }
