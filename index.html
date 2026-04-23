@@ -1295,17 +1295,27 @@ function AnalysisPanel({onPositionsUpdate}){
         const _partialErrors=[];
         if(posData.error){
           const d=posData._errorDetail?.[0]||{};
+          const runErrors=(posData.runs||[]).filter(Boolean).join('; ');
+          const dbg=posData._debug||{};
           _partialErrors.push({source:'Position Check (Haiku)',error:posData.error,
-            stop:d.stopReason,tokens:`${d.tokensUsed}/${posData._debug?.maxTokens||'?'}`,
-            hint:d.stopReason==='max_tokens'?'Response truncated — too many positions for token limit':''});
-          logError('SPLIT_POS_ERROR',posData.error,{stop:d.stopReason,tokens:d.tokensUsed});
+            stop:d.stopReason,tokens:`${d.tokensUsed||'?'}/${dbg.maxTokens||'?'}`,
+            detail:runErrors||d.error||'',
+            context:`ctx:${(dbg.contextLength/1000).toFixed(1)}k, sys:${(dbg.sysPromptLength/1000).toFixed(1)}k`,
+            hint:d.stopReason==='max_tokens'?'Response truncated — too many positions for token limit':
+              (runErrors.includes('overloaded')?'Anthropic API overloaded — retry in a minute':'')});
+          logError('SPLIT_POS_ERROR',posData.error,{stop:d.stopReason,tokens:d.tokensUsed,runErrors,contextLen:dbg.contextLength});
         }
         if(oppData.error){
           const d=oppData._errorDetail?.[0]||{};
+          const runErrors=(oppData.runs||[]).filter(Boolean).join('; ');
+          const dbg=oppData._debug||{};
           _partialErrors.push({source:'Opportunity Scan (Sonnet)',error:oppData.error,
-            stop:d.stopReason,tokens:`${d.tokensUsed}/${oppData._debug?.maxTokens||'?'}`,
-            hint:d.stopReason==='max_tokens'?'Response truncated — increase token limit':''});
-          logError('SPLIT_OPP_ERROR',oppData.error,{stop:d.stopReason,tokens:d.tokensUsed});
+            stop:d.stopReason,tokens:`${d.tokensUsed||'?'}/${dbg.maxTokens||'?'}`,
+            detail:runErrors||d.error||'',
+            context:`ctx:${(dbg.contextLength/1000).toFixed(1)}k, sys:${(dbg.sysPromptLength/1000).toFixed(1)}k`,
+            hint:d.stopReason==='max_tokens'?'Response truncated — increase token limit':
+              (runErrors.includes('overloaded')?'Anthropic API overloaded — retry in a minute':'')});
+          logError('SPLIT_OPP_ERROR',oppData.error,{stop:d.stopReason,tokens:d.tokensUsed,runErrors,contextLen:dbg.contextLength});
         }
         if(posData.error&&oppData.error){
           throw new Error(`Both calls failed | pos: ${posData.error} | opp: ${oppData.error}`);
@@ -1466,7 +1476,8 @@ function AnalysisPanel({onPositionsUpdate}){
               <span className="text-yellow-500 text-xs font-bold mt-0.5">⚠️</span>
               <div>
                 <div className="text-xs font-bold text-yellow-400">{e.source} failed</div>
-                <div className="text-xs text-yellow-500/70">{e.error}{e.stop?` (${e.stop}, ${e.tokens} tokens)`:''}</div>
+                <div className="text-xs text-yellow-500/70">{e.detail||e.error}{e.stop?` (${e.stop}, ${e.tokens} tokens)`:''}</div>
+                {e.context&&<div className="text-xs text-yellow-600/50">{e.context}</div>}
                 {e.hint&&<div className="text-xs text-yellow-600 mt-0.5">{e.hint}</div>}
               </div>
             </div>
