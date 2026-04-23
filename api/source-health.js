@@ -80,10 +80,11 @@ module.exports = async (req, res) => {
       return { count: Math.max(rows.length, tickers.length) };
     }),
 
-    // World Monitor
-    checkSource('World Monitor', 'https://worldmonitor.app', (html) => {
-      const hasData = html.includes('macro') || html.includes('signal') || html.includes('fear') || html.includes('greed');
-      return { count: hasData ? 1 : 0 };
+    // World Monitor (homepage keywords changed — check for OSINT/geopolitical/dashboard terms)
+    checkSource('World Monitor', 'https://www.worldmonitor.app/', (html) => {
+      const keywords = ['geopolitical', 'intelligence', 'OSINT', 'dashboard', 'monitor', 'tracking', 'conflict', 'threat', 'macro', 'signal', 'fear', 'greed', 'risk'];
+      const hits = keywords.filter(k => html.toLowerCase().includes(k.toLowerCase())).length;
+      return { count: hits >= 2 ? hits : 0 };
     }),
 
     // Quiver — Congressional Trading
@@ -105,8 +106,8 @@ module.exports = async (req, res) => {
       return { count: hasData ? Math.max(rows - 1, hasTd > 10 ? Math.floor(hasTd/4) : 0, tickers) : 0 };
     }),
 
-    // Quiver — Government Contracts (try both URL variants)
-    checkSource('Quiver: Gov Contracts', 'https://www.quiverquant.com/governmentcontracts', (html) => {
+    // Quiver — Government Contracts (URL changed to /government-spending/)
+    checkSource('Quiver: Gov Contracts', 'https://www.quiverquant.com/government-spending/', (html) => {
       const rows = (html.match(/<tr[^>]*>/g) || []).length;
       const jsData = html.includes('var data') || html.includes('var tableData') || html.includes('"Agency"');
       const hasTd = (html.match(/<td[^>]*>/g) || []).length;
@@ -131,10 +132,11 @@ module.exports = async (req, res) => {
       } catch { return { count: 0 }; }
     }),
 
-    // CNN Fear & Greed (via World Monitor — same endpoint)
-    checkSource('Fear & Greed', 'https://worldmonitor.app', (html) => {
-      const hasFG = html.includes('fear') && html.includes('greed');
-      return { count: hasFG ? 1 : 0 };
+    // CNN Fear & Greed (via World Monitor)
+    checkSource('Fear & Greed', 'https://www.worldmonitor.app/', (html) => {
+      const keywords = ['fear', 'greed', 'sentiment', 'index', 'cnn', 'market mood', 'risk'];
+      const hits = keywords.filter(k => html.toLowerCase().includes(k.toLowerCase())).length;
+      return { count: hits >= 1 ? hits : 0 };
     }),
   ]);
 

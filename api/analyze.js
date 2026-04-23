@@ -117,7 +117,7 @@ async function fetchQuiverData() {
       }).filter(Boolean),
     },
     {
-      key: 'govContracts', url: 'https://www.quiverquant.com/governmentcontracts/',
+      key: 'govContracts', url: 'https://www.quiverquant.com/government-spending/',
       parseRows: (rows) => rows.map(cells => {
         const ticker = findTicker(cells);
         if (!ticker) return null;
