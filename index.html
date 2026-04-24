@@ -700,11 +700,11 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     if(!_smartStop){
       // Not enough profit to tighten — fall through to DO NOTHING
       verdict='DO NOTHING';verdictIcon='📊';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
-      verdictReason=`Held ${_daysHeld||'?'}d. ${_aboveEntry<0?`Down ${fmt(Math.abs(_aboveEntry||0),1)}%`:`Flat (+${fmt(_aboveEntry||0,1)}%)`}. Not enough profit to tighten — keep original stop at $${fmt(_stop)}.${_earningsWarn}`;
+      verdictReason=`Held ${t.daysHeld||'?'}d. ${_aboveEntry<0?`Down ${fmt(Math.abs(_aboveEntry||0),1)}%`:`Flat (+${fmt(_aboveEntry||0,1)}%)`}. Not enough profit to tighten — keep original stop at $${fmt(_stop)}.${_earningsWarn}`;
       primaryAction=null;primaryLabel='';
     } else {
       verdict='TIGHTEN STOP';verdictIcon='🔧';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-      verdictReason=`Held ${_daysHeld||'?'}d. ${_aboveEntry>=3?'Up enough for breakeven stop':'Tighten to midpoint'} → $${fmt(_smartStop)}.${_earningsWarn}`;
+      verdictReason=`Held ${t.daysHeld||'?'}d. ${_aboveEntry>=3?'Up enough for breakeven stop':'Tighten to midpoint'} → $${fmt(_smartStop)}.${_earningsWarn}`;
       primaryAction='tighten_stop';primaryLabel=`Tighten Stop → $${fmt(_smartStop)}`;
     }
   } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3&&_aboveEntry<0){
