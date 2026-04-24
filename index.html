@@ -270,6 +270,55 @@ const SOURCE_META={
   'Quiver Quantitative':{icon:'🕵️',color:'#ef4444'},
   'Sector Momentum':{icon:'📈',color:'#14b8a6'},
 };
+// ── Ticker tooltip — API handles Notion persistence, frontend just caches in-memory ──
+const _tickerCache={};
+function TickerLabel({ticker,className,style}){
+  const [info,setInfo]=useState(_tickerCache[ticker]||null);
+  const [show,setShow]=useState(false);
+  const [pos,setPos]=useState({x:0,y:0});
+  const timerRef=useRef(null);
+  const handleEnter=(e)=>{
+    const rect=e.currentTarget.getBoundingClientRect();
+    setPos({x:rect.left,y:rect.bottom+4});
+    timerRef.current=setTimeout(()=>{
+      setShow(true);
+      if(_tickerCache[ticker]){setInfo(_tickerCache[ticker]);return;}
+      fetch(`/api/ticker-info?symbols=${ticker}`).then(r=>r.json()).then(d=>{
+        if(d[ticker]){_tickerCache[ticker]=d[ticker];setInfo(d[ticker]);}
+      }).catch(()=>{});
+    },350);
+  };
+  const handleLeave=()=>{clearTimeout(timerRef.current);setShow(false);};
+  return(
+    <span className={className||"font-black text-white"} style={{...style,cursor:'default',position:'relative'}}
+      onMouseEnter={handleEnter} onMouseLeave={handleLeave}>
+      {ticker}
+      {show&&ReactDOM.createPortal(
+        <div style={{position:'fixed',left:pos.x,top:pos.y,zIndex:9999,
+          background:'#151d2e',border:'1px solid #2a3a5c',borderRadius:8,padding:'8px 12px',
+          boxShadow:'0 8px 32px rgba(0,0,0,0.5)',maxWidth:280,minWidth:180,
+          fontSize:11,color:'#e2e8f0',lineHeight:1.5}}>
+          {info?(
+            <div>
+              <div style={{fontWeight:800,fontSize:13,color:'#fff',marginBottom:2}}>{info.name}</div>
+              <div style={{color:'#94a3b8'}}>{info.industry}</div>
+              <div style={{display:'flex',gap:12,marginTop:4,color:'#64748b'}}>
+                <span>{info.country}</span>
+                <span>{info.exchange}</span>
+                <span style={{color:'#6366f1',fontWeight:700}}>{info.marketCap}</span>
+              </div>
+              {info.ipo&&info.ipo!=='—'&&<div style={{color:'#475569',marginTop:2}}>IPO: {info.ipo}</div>}
+            </div>
+          ):(
+            <div style={{color:'#64748b'}}>Loading...</div>
+          )}
+        </div>,
+        document.body
+      )}
+    </span>
+  );
+}
+
 const VERDICT_COLOR={BULLISH:'#22c55e',BEARISH:'#ef4444',NEUTRAL:'#94a3b8',NO_DATA:'#374151'};
 
 function SignalAttribution({attribution,compact}){
@@ -447,7 +496,7 @@ function OrderDrafts(){
             <div className="flex items-start justify-between gap-3 mb-3">
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-black text-xl text-white">{d.ticker}</span>
+                  <TickerLabel ticker={d.ticker} className="font-black text-xl text-white"/>
                   <span className="text-xs text-gray-500">{d.strategy}</span>
                   {d.score&&<Pill text={`Score ${d.score}`}
                     color={d.score>=80?'#22c55e':d.score>=65?'#84cc16':'#f59e0b'}/>}
@@ -1566,7 +1615,7 @@ function AnalysisPanel({onPositionsUpdate}){
                 return(
                   <div key={i} className="px-4 py-3"style={{background:'#0a0e1a',borderTop:'1px solid #0f1828'}}>
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="font-black text-white">{p.ticker}</span>
+                      <TickerLabel ticker={p.ticker} className="font-black text-white"/>
                       <Pill text={p.recommendation.replace(/_/g,' ')} color={c}/>
                       {p.pnlPct!=null&&<span className="text-xs font-bold"style={{color:p.pnlPct>0?'#22c55e':'#ef4444'}}>{p.pnlPct>0?'+':''}{fmt(p.pnlPct,1)}%</span>}
                       {p.currentPrice&&<span className="text-xs text-gray-500">~${fmt(p.currentPrice,2)}</span>}
@@ -1598,7 +1647,7 @@ function AnalysisPanel({onPositionsUpdate}){
                 return(
                   <div key={i} className="px-4 py-3"style={{background:'#0a0e1a',borderTop:'1px solid #0f1828'}}>
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span className="font-black text-white text-lg">{d.ticker}</span>
+                      <TickerLabel ticker={d.ticker} className="font-black text-white text-lg"/>
                       <span className="text-xs font-black px-2 py-0.5 rounded-full"
                         style={{background:sc(d.score)+'22',color:sc(d.score)}}>{d.score}/100</span>
                       <Pill text={d.verdict||d.action} color={d.verdict==='STRONG BUY'||d.action==='BUY'?'#22c55e':'#f59e0b'}/>
