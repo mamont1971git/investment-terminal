@@ -2008,6 +2008,21 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   analysis.walletAlerts = (analysis.opportunities || [])
     .filter(o => o._walletBlocked)
     .map(o => ({ ticker: o.ticker, alert: o._walletAlert }));
+
+  // Pre-fetch ticker profiles into Notion dictionary (fire-and-forget)
+  // So tooltips are instant by the time Daniel sees the dashboard
+  try {
+    const allTickers = new Set();
+    (analysis.opportunities || []).forEach(o => o.ticker && allTickers.add(o.ticker.toUpperCase()));
+    (analysis.positions || []).forEach(p => p.ticker && allTickers.add(p.ticker.toUpperCase()));
+    (analysis.discoveredCandidates || []).forEach(d => d.ticker && allTickers.add(d.ticker.toUpperCase()));
+    if (allTickers.size > 0) {
+      const syms = [...allTickers].slice(0, 30).join(',');
+      httpsGet(`https://investment-terminal-tawny.vercel.app/api/ticker-info?symbols=${syms}`)
+        .catch(() => {}); // fire-and-forget
+    }
+  } catch {}
+
   res.json(analysis);
   } catch (fatalErr) {
     console.error('FATAL analyze.js error:', fatalErr);
