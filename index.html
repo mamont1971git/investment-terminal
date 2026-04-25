@@ -695,13 +695,21 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     verdictReason=`Only ${fmt(_toStop,1)}% above your stop. Be ready to exit.${_earningsWarn}`;
     primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(_price)}`;
   } else if(_rec==='TIGHTEN_STOP'){
-    // If P&L is near zero or negative, don't show confusing TIGHTEN STOP — show DO NOTHING instead
+    // Smart stop: needs +1% profit to tighten normally, BUT earnings override that rule
     const _smartStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||(t.entry*0.93);if(pnl>=3)return t.entry;if(pnl>=1)return+((orig+t.entry)/2).toFixed(2);return null;})();
-    if(!_smartStop){
-      // Not enough profit to tighten — fall through to DO NOTHING
+    // Earnings override: if AI says tighten AND earnings approaching, respect it even at 0% P&L
+    const _earningsOverride=(!_smartStop&&_hasEarnings&&_earningsDays!=null&&_earningsDays<=10);
+    const _earningsStop=_earningsOverride?(()=>{const orig=_stop||((_entry||t.entry)*0.93);return+((orig+(_entry||t.entry))/2).toFixed(2);})():null;
+    if(!_smartStop&&!_earningsOverride){
+      // Not enough profit to tighten and no earnings catalyst — fall through to DO NOTHING
       verdict='DO NOTHING';verdictIcon='📊';verdictColor='#94a3b8';verdictBg='#0f1828';verdictBorder='#1e2d4a';
       verdictReason=`Held ${t.daysHeld||'?'}d. ${_aboveEntry<0?`Down ${fmt(Math.abs(_aboveEntry||0),1)}%`:`Flat (+${fmt(_aboveEntry||0,1)}%)`}. Not enough profit to tighten — keep original stop at $${fmt(_stop)}.${_earningsWarn}`;
       primaryAction=null;primaryLabel='';
+    } else if(_earningsOverride){
+      // AI recommends tighten + earnings approaching = respect the AI even at low P&L
+      verdict='TIGHTEN — EARNINGS';verdictIcon='⚡';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
+      verdictReason=t.right?t.right.slice(0,200):`Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. AI recommends tightening stop to reduce risk before binary event. ${_earningsStop?`Tighten to $${fmt(_earningsStop)}.`:''}`;
+      primaryAction=_earningsStop?'tighten_stop':'hold';primaryLabel=_earningsStop?`Tighten Stop → $${fmt(_earningsStop)}`:'Hold — Keep Stop';
     } else {
       verdict='TIGHTEN STOP';verdictIcon='🔧';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
       verdictReason=`Held ${t.daysHeld||'?'}d. ${_aboveEntry>=3?'Up enough for breakeven stop':'Tighten to midpoint'} → $${fmt(_smartStop)}.${_earningsWarn}`;
@@ -732,8 +740,8 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   }
 
   // Verdict pill color for header
-  const verdictPillColor=verdict.startsWith('SELL')?'#ef4444':verdict.startsWith('WATCH')?'#f59e0b':verdict==='DO NOTHING'?'#60a5fa':'#94a3b8';
-  const verdictPillText=verdict.startsWith('SELL NOW')?'SELL':verdict==='WATCH CLOSELY'?'WATCH':verdict==='DO NOTHING'?'HOLD':'—';
+  const verdictPillColor=verdict.startsWith('SELL')?'#ef4444':verdict.startsWith('WATCH')?'#f59e0b':verdict.startsWith('TIGHTEN')?'#f59e0b':verdict==='DO NOTHING'?'#60a5fa':verdict==='EXIT'?'#ef4444':'#94a3b8';
+  const verdictPillText=verdict.startsWith('SELL NOW')?'SELL':verdict==='WATCH CLOSELY'?'WATCH':verdict.startsWith('TIGHTEN')?'TIGHTEN':verdict.startsWith('EXIT')?'EXIT':verdict==='DO NOTHING'?'HOLD':'—';
 
   return(
     <div style={{borderTop:'1px solid #1e2d4a',background:'#0a0e1a'}}>
