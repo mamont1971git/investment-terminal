@@ -2422,7 +2422,17 @@ function DailyBrief(){
         <OrderDrafts/>
 
         {/* ── wallet (top-level quick stats) ── */}
-        {wallet&&(
+        {wallet&&(()=>{
+          const STARTING_CAPITAL=5000;
+          const totalVal=wallet.totalLiveValue||wallet.totalValue||STARTING_CAPITAL;
+          const growthPct=+((totalVal-STARTING_CAPITAL)/STARTING_CAPITAL*100).toFixed(1);
+          const grade=growthPct>=25?{label:'PERFECT',emoji:'🏆',color:'#a78bfa',bg:'#a78bfa20',border:'#a78bfa40'}
+            :growthPct>=20?{label:'EXCELLENT',emoji:'🌟',color:'#22c55e',bg:'#22c55e20',border:'#22c55e40'}
+            :growthPct>=15?{label:'GOOD',emoji:'✅',color:'#22c55e',bg:'#22c55e15',border:'#22c55e30'}
+            :growthPct>=10?{label:'ACCEPTABLE',emoji:'📊',color:'#f59e0b',bg:'#f59e0b15',border:'#f59e0b30'}
+            :{label:'NEEDS WORK',emoji:'⚠️',color:'#ef4444',bg:'#ef444415',border:'#ef444430'};
+          const progressPct=Math.min(100,Math.max(0,(growthPct/25)*100));
+          return(
           <Card className="p-4">
             <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">
               <span style={{marginRight:'6px'}}>💰</span> Virtual Wallet
@@ -2431,7 +2441,7 @@ function DailyBrief(){
               {[
                 {l:'Cash',v:`$${fmt(wallet.cashBalance,0)}`,c:'#22c55e'},
                 {l:'Invested',v:`$${fmt(wallet.totalInvested,0)}`,c:'#60a5fa'},
-                {l:'Portfolio',v:`$${fmt(wallet.totalLiveValue||wallet.totalValue,0)}`,c:'#a78bfa'},
+                {l:'Portfolio',v:`$${fmt(totalVal,0)}`,c:'#a78bfa'},
                 {l:'Unrealized',v:`${(wallet.unrealizedPnl||0)>=0?'+':''}$${fmt(wallet.unrealizedPnl||0,0)}`,
                   c:(wallet.unrealizedPnl||0)>=0?'#22c55e':'#ef4444'},
               ].map((s,i)=>(
@@ -2440,6 +2450,31 @@ function DailyBrief(){
                   <div className="font-black text-base"style={{color:s.c}}>{s.v}</div>
                 </div>
               ))}
+            </div>
+            {/* ── Performance Grade ── */}
+            <div style={{marginTop:'12px',padding:'10px 14px',background:grade.bg,border:`1px solid ${grade.border}`,borderRadius:'8px'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'6px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                  <span style={{fontSize:'14px'}}>{grade.emoji}</span>
+                  <span style={{fontSize:'13px',fontWeight:700,color:grade.color,letterSpacing:'0.05em'}}>{grade.label}</span>
+                </div>
+                <div style={{fontSize:'13px',fontWeight:700,color:grade.color}}>
+                  {growthPct>=0?'+':''}{growthPct}%
+                </div>
+              </div>
+              {/* Progress bar toward 25% (Perfect) */}
+              <div style={{height:'4px',background:'#ffffff10',borderRadius:'2px',overflow:'hidden',marginBottom:'6px'}}>
+                <div style={{height:'100%',width:`${progressPct}%`,background:grade.color,borderRadius:'2px',transition:'width 0.5s ease'}}/>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:'10px',color:'#6b7280'}}>
+                <span>$5,000 start</span>
+                <span style={{display:'flex',gap:'8px'}}>
+                  <span style={{color:growthPct>=10?'#22c55e80':'#6b728080'}}>10%</span>
+                  <span style={{color:growthPct>=15?'#22c55e80':'#6b728080'}}>15%</span>
+                  <span style={{color:growthPct>=20?'#22c55e80':'#6b728080'}}>20%</span>
+                  <span style={{color:growthPct>=25?'#a78bfa80':'#6b728080'}}>25%</span>
+                </span>
+              </div>
             </div>
             {wallet.unrealizedPnlPct!=null&&(
               <div className="text-center mt-2 text-xs text-gray-500">
@@ -2450,7 +2485,8 @@ function DailyBrief(){
               </div>
             )}
           </Card>
-        )}
+          );
+        })()}
 
         {/* ── open positions (from Notion) ── */}
         {posStatus==='loading'&&!positions.length&&(

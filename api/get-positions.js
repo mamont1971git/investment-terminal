@@ -841,14 +841,27 @@ module.exports = async (req, res) => {
     return sum;
   }, 0);
 
+  // Performance grade based on total portfolio growth vs starting capital
+  const STARTING_CAPITAL = 5000;
+  const totalLiveValue = +(wallet.cashBalance + livePortfolioValue).toFixed(2);
+  const growthPct = +((totalLiveValue - STARTING_CAPITAL) / STARTING_CAPITAL * 100).toFixed(1);
+  const performanceGrade = growthPct >= 25 ? { label: 'PERFECT', tier: 5 }
+    : growthPct >= 20 ? { label: 'EXCELLENT', tier: 4 }
+    : growthPct >= 15 ? { label: 'GOOD', tier: 3 }
+    : growthPct >= 10 ? { label: 'ACCEPTABLE', tier: 2 }
+    : { label: 'NEEDS WORK', tier: 1 };
+
   const walletSummary = {
     ...wallet,
     livePortfolioValue: +livePortfolioValue.toFixed(2),
-    totalLiveValue: +(wallet.cashBalance + livePortfolioValue).toFixed(2),
+    totalLiveValue,
     unrealizedPnl: +(livePortfolioValue - wallet.totalInvested).toFixed(2),
     unrealizedPnlPct: wallet.totalInvested > 0
       ? +((livePortfolioValue - wallet.totalInvested) / wallet.totalInvested * 100).toFixed(2)
       : 0,
+    startingCapital: STARTING_CAPITAL,
+    growthPct,
+    performanceGrade,
   };
 
   // Compute signal source weights from closed trade history
