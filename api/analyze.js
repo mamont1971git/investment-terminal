@@ -18,7 +18,31 @@ const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
 const TUNING_DB = 'c326714ad2b748878e94c473760c97e3';
 
+// ── Sector map for concentration limits ─────────────────────────────────
+const TICKER_SECTOR_MAP = {
+  BAH:'Defense',LDOS:'Defense',LHX:'Defense',LMT:'Defense',RTX:'Defense',NOC:'Defense',GD:'Defense',BA:'Defense',
+  XOM:'Energy',CVX:'Energy',USO:'Energy',XLE:'Energy',
+  AAPL:'Tech',MSFT:'Tech',GOOGL:'Tech',AMZN:'Tech',META:'Tech',NVDA:'Tech',AMD:'Tech',INTC:'Tech',CRM:'Tech',PLTR:'Tech',
+  JPM:'Financials',GS:'Financials',BAC:'Financials',XLF:'Financials',
+  STLD:'Steel',NUE:'Steel',CLF:'Steel',
+  UNH:'Healthcare',JNJ:'Healthcare',
+  GLD:'Commodities',SLV:'Commodities',
+};
+
 // ── helpers ──────────────────────────────────────────────────────────────
+function notionPatch(pageId, properties, token) {
+  const body = JSON.stringify({ properties });
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'api.notion.com', path: `/v1/pages/${pageId}`, method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(body) },
+    }, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => resolve(d)); });
+    req.on('error', () => resolve(null));
+    req.write(body); req.end();
+  });
+}
+
 function httpsGet(url, headers={}, maxRedirects=3) {
   return new Promise((resolve,reject) => {
     const doReq = (reqUrl, left) => {
@@ -440,9 +464,12 @@ async function fetchOpenTrades(token) {
 async function fetchRecentClosed(token) {
   return new Promise((resolve,reject)=>{
     const data = JSON.stringify({
-      filter:{property:'Status',select:{equals:'Closed'}},
+      filter:{or:[
+        {property:'Status',select:{equals:'Closed'}},
+        {property:'Status',select:{equals:'Stopped Out'}},
+      ]},
       sorts:[{timestamp:'created_time',direction:'descending'}],
-      page_size:8
+      page_size:50
     });
     const req = https.request({
       hostname:'api.notion.com',path:`/v1/databases/${TRADE_DB}/query`,method:'POST',
@@ -473,6 +500,7 @@ async function fetchApprovedTunings(token) {
           const tunings = pages.map(p => {
             const props = p.properties;
             return {
+              pageId: p.id,
               category: props['Category']?.select?.name || '',
               recommendation: props['Recommendation']?.title?.[0]?.plain_text || '',
               paramBefore: props['Parameter Before']?.rich_text?.[0]?.plain_text || '',
@@ -560,6 +588,16 @@ function formatTrade(p) {
     tp2: props['TP2']?.number,
     score: props['Composite Score']?.number,
     pnl: props['P&L %']?.number,
+    pnlPct: props['P&L %']?.number,
+    regime: props['Market Regime at Entry']?.select?.name || '',
+    daysHeld: props['Days Held']?.number,
+    closeReason: props['Close Reason']?.select?.name || props['Close Reason']?.rich_text?.[0]?.plain_text || '',
+    signalAttribution: (() => {
+      const raw = props['Signal Attribution']?.rich_text?.[0]?.plain_text || '';
+      if (!raw) return null;
+      try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return raw; }
+    })(),
+    positionPct: props['Position Size %']?.number,
     dateOpened: props['date:Date Opened:start']?.date?.start || props['Date Opened']?.date?.start || '',
     status: props['Status']?.select?.name || '',
     lesson: props['Lesson Learned']?.rich_text?.[0]?.plain_text || '',
@@ -1018,6 +1056,26 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
     }
     if (tuningMinScore !== null && tuningMinScore > minScore) {
       minScore = tuningMinScore;
+    }
+  }
+
+  // ── Tuning-derived sector concentration limit ───────────────────────────
+  let tuningSectorLimit = null;
+  let tuningDefenseGate = false;
+  if (approvedTunings && approvedTunings.length > 0) {
+    for (const t of approvedTunings) {
+      if (t.category === 'diversification') {
+        const sectorMatch = (t.paramAfter || '').match(/[Mm]aximum\s+(\d+)\s+open\s+positions?\s+per\s+sector/i);
+        if (sectorMatch) {
+          const val = Number(sectorMatch[1]);
+          if (val > 0) tuningSectorLimit = val;
+        }
+      }
+      if (t.category === 'strategy') {
+        if (/defense\s+sector\s+gate/i.test(t.paramAfter || '') || /defense\s+sector\s+gate/i.test(t.recommendation || '')) {
+          tuningDefenseGate = true;
+        }
+      }
     }
   }
 
@@ -1946,6 +2004,17 @@ Be constructive but unflinching. Every recommendation must be specific and imple
         }
         if (existingDraftTickers.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Draft already exists' }); continue; }
         if (draftedThisRun.has(tickerKey)) { draftsSkipped.push({ ticker: opp.ticker, reason: 'Duplicate in this run' }); continue; }
+        // Sector concentration limit enforcement
+        if (tuningSectorLimit) {
+          const oppSector = TICKER_SECTOR_MAP[tickerKey];
+          if (oppSector) {
+            const sectorCount = openFormatted.filter(t => TICKER_SECTOR_MAP[t.ticker?.toUpperCase()] === oppSector).length;
+            if (sectorCount >= tuningSectorLimit) {
+              draftsSkipped.push({ ticker: opp.ticker, reason: `Sector concentration limit (max ${tuningSectorLimit} per sector)` });
+              continue;
+            }
+          }
+        }
         // ALWAYS fetch live price — never trust Claude's price suggestion
         let price = null;
         try {
@@ -1990,6 +2059,19 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   analysis.draftsCreated = draftsCreated;
   analysis.draftsSkipped = draftsSkipped;
   analysis.wallet = walletState;
+
+  // Mark approved tunings as Applied (fire-and-forget)
+  if (approvedTunings && approvedTunings.length > 0 && NOTION_TOKEN) {
+    for (const t of approvedTunings) {
+      if (t.pageId) {
+        notionPatch(t.pageId, {
+          'Status': { select: { name: 'Applied' } },
+          'Date Applied': { date: { start: new Date().toISOString().split('T')[0] } },
+        }, NOTION_TOKEN).catch(() => {});
+      }
+    }
+  }
+
   if (isDiagnoseMode && diagnosticData) analysis._diagnostics = diagnosticData;
   if (isConsistencyMode && consistencyReport) analysis._consistency = consistencyReport;
   analysis._activeTunings = approvedTunings ? approvedTunings.length : 0;

@@ -4,6 +4,24 @@
 const https = require('https');
 const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 
+const TICKER_SECTOR = {
+  // Defense / Gov Contracting
+  BAH:'Defense',LDOS:'Defense',LHX:'Defense',LMT:'Defense',RTX:'Defense',NOC:'Defense',GD:'Defense',BA:'Defense',
+  // Energy
+  XOM:'Energy',CVX:'Energy',USO:'Energy',XLE:'Energy',OXY:'Energy',SLB:'Energy',
+  // Tech
+  AAPL:'Tech',MSFT:'Tech',GOOGL:'Tech',AMZN:'Tech',META:'Tech',NVDA:'Tech',AMD:'Tech',INTC:'Tech',CRM:'Tech',PLTR:'Tech',
+  // Financials
+  JPM:'Financials',GS:'Financials',BAC:'Financials',XLF:'Financials',
+  // Steel / Industrials
+  STLD:'Steel',NUE:'Steel',CLF:'Steel',FLR:'Industrials',
+  // Healthcare
+  UNH:'Healthcare',JNJ:'Healthcare',REGN:'Healthcare',
+  // Commodities
+  GLD:'Commodities',SLV:'Commodities',
+};
+const MAX_SECTOR_POSITIONS = 2;
+
 function notionPost(path, body, token) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
@@ -63,6 +81,39 @@ module.exports = async (req, res) => {
     }
   } catch{}
 
+  // SECTOR CONCENTRATION: block if too many open positions in the same sector
+  const sector = TICKER_SECTOR[ticker] || null;
+  if (sector) {
+    try {
+      const sectorResult = await notionPost(`/v1/databases/${TRADE_DB}/query`, {
+        filter:{and:[
+          {property:'Simulation Mode',checkbox:{equals:true}},
+          {or:[
+            {property:'Status',select:{equals:'Open'}},
+            {property:'Status',select:{equals:'Paper'}},
+            {property:'Status',select:{equals:'Draft'}},
+          ]}
+        ]},page_size:100
+      }, TOKEN);
+      if (sectorResult.body?.results) {
+        const sameSecCount = sectorResult.body.results.filter(page => {
+          const tickerProp = page.properties?.Ticker?.rich_text;
+          const pageTicker = tickerProp && tickerProp[0]?.plain_text ? tickerProp[0].plain_text.toUpperCase() : '';
+          return pageTicker !== ticker && TICKER_SECTOR[pageTicker] === sector;
+        }).length;
+        if (sameSecCount >= MAX_SECTOR_POSITIONS) {
+          return res.json({ok:false, skipped:true, reason:`Sector concentration limit: max ${MAX_SECTOR_POSITIONS} positions in ${sector} sector`});
+        }
+      }
+    } catch{}
+  }
+
+  // DEFENSE MACRO GATE: flag defense tickers using Breakout Momentum strategy
+  let defenseMacroNote = '';
+  if (sector === 'Defense' && t.strategy && t.strategy.toLowerCase().includes('breakout')) {
+    defenseMacroNote = ' [Defense macro gate active — verify no FOMC within 5 trading days]';
+  }
+
   // ALWAYS use the live market price — never trust Claude's suggested price
   // Claude's training data has stale prices (e.g., 2025 prices for 2026 trades)
   let entryPrice = null;
@@ -97,7 +148,7 @@ module.exports = async (req, res) => {
     'TP1':             {number:tp1}, 'TP2':{number:tp2}, 'TP3':{number:tp3},
     'Composite Score': {number:t.score?Number(t.score):null},
     'Recommendation Score':{number:t.score?Number(t.score):null},
-    'What Went Right': {rich_text:[{text:{content:(t.reasoning||'').slice(0,2000)}}]},
+    'What Went Right': {rich_text:[{text:{content:((t.reasoning||'')+defenseMacroNote).slice(0,2000)}}]},
     'Date Opened':     {date:{start:today}},
   };
   if (regimeName)    props['Market Regime at Entry'] = {select:{name:regimeName}};
