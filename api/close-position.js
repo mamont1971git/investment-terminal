@@ -1,7 +1,10 @@
 // POST /api/close-position
 // Closes a paper trade in Notion: sets exit price, P&L, close reason, date
+// Creates a SELL wallet transaction to return funds to the virtual wallet
 // Used by dashboard Take Profit / Exit / Tighten Stop actions
 const https = require('https');
+
+const WALLET_DB = 'f0e0d34f98334542a24081bfe6c80110';
 
 function notionPatch(pageId, props, token) {
   return new Promise((resolve, reject) => {
@@ -36,6 +39,66 @@ async function getPrice(ticker, apiKey) {
       }
     ).on('error', () => resolve(null)).on('timeout', function () { this.destroy(); resolve(null); });
   });
+}
+
+// ── Wallet helpers ──────────────────────────────────────────────────
+function notionPost(path, body, token) {
+  return new Promise((resolve) => {
+    const data = JSON.stringify(body);
+    const req = https.request({
+      hostname: 'api.notion.com', path, method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(data) },
+    }, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } }); });
+    req.on('error', () => resolve(null)); req.write(data); req.end();
+  });
+}
+
+async function getWalletBalance(token) {
+  const result = await notionPost(`/v1/databases/${WALLET_DB}/query`, {
+    sorts: [{ property: 'Date', direction: 'ascending' }],
+    page_size: 200,
+  }, token);
+  let cash = 0;
+  for (const page of (result?.results || [])) {
+    cash += (page.properties?.['Amount']?.number || 0);
+  }
+  return +cash.toFixed(2);
+}
+
+function getWalletShares(results, ticker) {
+  // Sum shares from BUY transactions, subtract SELL transactions for this ticker
+  let shares = 0;
+  for (const page of (results || [])) {
+    const p = page.properties;
+    const type = p?.['Type']?.select?.name;
+    const t = (p?.['Ticker']?.rich_text?.[0]?.plain_text || '').toUpperCase();
+    if (t !== ticker) continue;
+    const s = p?.['Shares']?.number || 0;
+    if (type === 'BUY') shares += s;
+    else if (type === 'SELL') shares -= s;
+  }
+  return +shares.toFixed(4);
+}
+
+async function createWalletSell(ticker, shares, price, amount, tradeId, token) {
+  const balance = await getWalletBalance(token);
+  const newBalance = +(balance + amount).toFixed(2); // amount is positive for SELL
+  const result = await notionPost('/v1/pages', {
+    parent: { database_id: WALLET_DB },
+    properties: {
+      'Transaction': { title: [{ text: { content: `SELL ${ticker} × ${shares.toFixed(4)}` } }] },
+      'Type': { select: { name: 'SELL' } },
+      'Ticker': { rich_text: [{ text: { content: ticker } }] },
+      'Shares': { number: +shares.toFixed(4) },
+      'Price': { number: price },
+      'Amount': { number: +amount.toFixed(2) },
+      'Balance After': { number: newBalance },
+      'Date': { date: { start: new Date().toISOString() } },
+      'Trade Link': { relation: [{ id: tradeId }] },
+    },
+  }, token);
+  return { ok: result?.object !== 'error', newBalance, walletTxId: result?.id };
 }
 
 module.exports = async (req, res) => {
@@ -119,12 +182,33 @@ module.exports = async (req, res) => {
       const msg = r.body?.message || JSON.stringify(r.body).slice(0, 200);
       return res.json({ ok: false, error: `Notion error: ${msg}` });
     }
+    // ── Create SELL wallet transaction to return funds ──
+    let walletResult = null;
+    if (ticker && currentPrice && action !== 'tighten_stop') {
+      try {
+        // Look up how many shares we hold from wallet transactions
+        const walletData = await notionPost(`/v1/databases/${WALLET_DB}/query`, {
+          filter: { property: 'Ticker', rich_text: { equals: ticker } },
+          page_size: 50,
+        }, TOKEN);
+        const shares = getWalletShares(walletData?.results, ticker);
+        if (shares > 0) {
+          const sellProceeds = +(shares * currentPrice).toFixed(2);
+          walletResult = await createWalletSell(ticker, shares, currentPrice, sellProceeds, notionId, TOKEN);
+        }
+      } catch (walletErr) {
+        // Don't fail the close if wallet tx fails — log but continue
+        console.error('Wallet SELL failed:', walletErr.message);
+      }
+    }
+
     res.json({
       ok: true,
       closed: {
         ticker, action, closeReason, status,
         exitPrice: currentPrice, entryPrice: entry,
         pnlPct, daysHeld, date: today,
+        walletSell: walletResult ? { proceeds: +(walletResult.newBalance || 0), txId: walletResult.walletTxId } : null,
       }
     });
   } catch (e) {
