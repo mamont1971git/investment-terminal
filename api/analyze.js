@@ -863,12 +863,30 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
         const clean = rawText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
         try { return { parsed: JSON.parse(clean), raw: rawText, run: runNum, stopReason, tokensUsed }; }
         catch(pe) {
-          // Try to repair truncated JSON (close open strings, brackets, braces)
+          // Strategy 1: Extract JSON object/array by finding balanced braces
           let repaired = clean;
-          // Close any unterminated string
+          const jsonStart = clean.search(/[\[{]/);
+          if (jsonStart >= 0) {
+            // Find the matching closing brace by counting depth
+            let depth = 0; let inStr = false; let esc = false; let jsonEnd = -1;
+            for (let i = jsonStart; i < clean.length; i++) {
+              const ch = clean[i];
+              if (esc) { esc = false; continue; }
+              if (ch === '\\') { esc = true; continue; }
+              if (ch === '"') { inStr = !inStr; continue; }
+              if (inStr) continue;
+              if (ch === '{' || ch === '[') depth++;
+              else if (ch === '}' || ch === ']') { depth--; if (depth === 0) { jsonEnd = i; break; } }
+            }
+            if (jsonEnd > jsonStart) {
+              const extracted = clean.slice(jsonStart, jsonEnd + 1);
+              try { return { parsed: JSON.parse(extracted), raw: rawText, run: runNum, stopReason, tokensUsed, repaired: true }; }
+              catch(e2) { repaired = extracted; }
+            }
+          }
+          // Strategy 2: Close unterminated strings and brackets
           const quoteCount = (repaired.match(/(?<!\\)"/g) || []).length;
           if (quoteCount % 2 !== 0) repaired += '"';
-          // Close open brackets/braces
           const opens = (repaired.match(/[\[{]/g) || []).length;
           const closes = (repaired.match(/[\]}]/g) || []).length;
           for (let i = 0; i < opens - closes; i++) {
@@ -876,7 +894,6 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
             const lastOpenChar = repaired[lastOpen];
             repaired += lastOpenChar === '[' ? ']' : '}';
           }
-          // Remove trailing comma before closing
           repaired = repaired.replace(/,\s*([}\]])/g, '$1');
           try { return { parsed: JSON.parse(repaired), raw: rawText, run: runNum, stopReason, tokensUsed, repaired: true }; }
           catch(pe2) { return { parsed: null, raw: rawText, run: runNum, parseError: pe.message, stopReason, tokensUsed }; }
@@ -1778,11 +1795,44 @@ Be constructive but unflinching. Every recommendation must be specific and imple
         messages: [{ role: 'user', content: context }],
       });
       const rawText = message.content[0].text;
+      const stopReason = message.stop_reason;
+      const tokensUsed = message.usage?.output_tokens || 0;
       const clean = rawText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
       try {
-        return { parsed: JSON.parse(clean), raw: rawText, run: runNum };
+        return { parsed: JSON.parse(clean), raw: rawText, run: runNum, stopReason, tokensUsed };
       } catch(pe) {
-        return { parsed: null, raw: rawText, run: runNum, parseError: pe.message };
+        // Strategy 1: Extract JSON by balanced brace matching (handles trailing text)
+        let repaired = clean;
+        const jsonStart = clean.search(/[\[{]/);
+        if (jsonStart >= 0) {
+          let depth = 0, inStr = false, esc = false, jsonEnd = -1;
+          for (let i = jsonStart; i < clean.length; i++) {
+            const ch = clean[i];
+            if (esc) { esc = false; continue; }
+            if (ch === '\\') { esc = true; continue; }
+            if (ch === '"') { inStr = !inStr; continue; }
+            if (inStr) continue;
+            if (ch === '{' || ch === '[') depth++;
+            else if (ch === '}' || ch === ']') { depth--; if (depth === 0) { jsonEnd = i; break; } }
+          }
+          if (jsonEnd > jsonStart) {
+            const extracted = clean.slice(jsonStart, jsonEnd + 1);
+            try { return { parsed: JSON.parse(extracted), raw: rawText, run: runNum, stopReason, tokensUsed, repaired: true }; }
+            catch(e2) { repaired = extracted; }
+          }
+        }
+        // Strategy 2: Close unterminated strings and brackets
+        const quoteCount = (repaired.match(/(?<!\\)"/g) || []).length;
+        if (quoteCount % 2 !== 0) repaired += '"';
+        const opens = (repaired.match(/[\[{]/g) || []).length;
+        const closes = (repaired.match(/[\]}]/g) || []).length;
+        for (let i = 0; i < opens - closes; i++) {
+          const lastOpen = Math.max(repaired.lastIndexOf('['), repaired.lastIndexOf('{'));
+          repaired += repaired[lastOpen] === '[' ? ']' : '}';
+        }
+        repaired = repaired.replace(/,\s*([}\]])/g, '$1');
+        try { return { parsed: JSON.parse(repaired), raw: rawText, run: runNum, stopReason, tokensUsed, repaired: true }; }
+        catch(pe2) { return { parsed: null, raw: rawText, run: runNum, parseError: pe.message, stopReason, tokensUsed }; }
       }
     } catch(e) {
       return { parsed: null, raw: null, run: runNum, error: e.message };
