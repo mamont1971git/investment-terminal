@@ -2154,23 +2154,24 @@ function DailyBrief(){
       d._filtered=filtered;
       d._appliedCount=applied.filter(r=>r.ok).length;
 
-      // ── Feedback loop: if a scoring tuning was applied, sync minScore ──
-      for(const rec of qualified){
-        if((rec.category==='scoring'||rec.category==='regime')&&rec.suggestedMinScore){
-          const newMin=Number(rec.suggestedMinScore);
-          if(newMin>0&&newMin!==minScore){
-            setMinScore(newMin);
-          }
-        }
-      }
-
-      // ── Apply approved tunings to Settings DB (closes the self-healing loop) ──
+      // ── Apply approved tunings to Settings DB (single authority for minScore) ──
+      // The old feedback loop that called setMinScore(suggestedMinScore) was removed
+      // because it raced with apply-tunings and overwrote Applied values.
+      // Now: tunings go to Tuning Log → apply-tunings writes to Settings DB → we refresh.
       if(applied.filter(r=>r.ok).length>0){
         try{
           const applyR=await fetch('/api/apply-tunings',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
           const applyD=await applyR.json();
           d._tuningsApplied=applyD;
-          if(applyD.applied>0)console.log(`[apply-tunings] ${applyD.applied} tuning(s) written to Settings DB`);
+          if(applyD.applied>0){
+            console.log(`[apply-tunings] ${applyD.applied} tuning(s) written to Settings DB`);
+            // Refresh minScore from Settings DB so UI reflects the applied value
+            try{
+              const sr=await fetch('/api/settings');
+              const ss=await sr.json();
+              if(ss&&ss.minScore)setMinScore(Number(ss.minScore));
+            }catch(e2){}
+          }
         }catch(e){console.warn('[apply-tunings] failed:',e.message);}
       }
 
