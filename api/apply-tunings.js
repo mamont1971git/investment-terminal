@@ -55,13 +55,6 @@ async function writeSetting(token, pageId, value) {
   }, token);
 }
 
-// Read back a setting to verify the write
-async function readSetting(token, pageId) {
-  const result = await notionRequest('GET', `/v1/pages/${pageId}`, {}, token);
-  // GET doesn't need a body but we pass empty object
-  return result.body?.properties?.['Value']?.rich_text?.[0]?.plain_text || null;
-}
-
 // Mark a tuning row as Applied or Reverted
 async function markTuning(token, pageId, status) {
   const props = {
@@ -174,7 +167,7 @@ module.exports = async (req, res) => {
       // Small delay to let Notion propagate
       await new Promise(r => setTimeout(r, 500));
 
-      // Read back via GET /v1/pages/{id} — need to handle that GET doesn't use a body
+      // Read back via database query to verify the write took effect
       const verifyResult = await notionRequest('POST', `/v1/databases/${SETTINGS_DB}/query`, {
         filter: { property: 'Setting', title: { equals: 'minScore' } },
         page_size: 1,
