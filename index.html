@@ -2164,6 +2164,16 @@ function DailyBrief(){
         }
       }
 
+      // ── Apply approved tunings to Settings DB (closes the self-healing loop) ──
+      if(applied.filter(r=>r.ok).length>0){
+        try{
+          const applyR=await fetch('/api/apply-tunings',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+          const applyD=await applyR.json();
+          d._tuningsApplied=applyD;
+          if(applyD.applied>0)console.log(`[apply-tunings] ${applyD.applied} tuning(s) written to Settings DB`);
+        }catch(e){console.warn('[apply-tunings] failed:',e.message);}
+      }
+
       setEvalResults(d);
       setApplyStatus(applied.length>0?'done':'idle');
       setEvalStatus('done');
@@ -2262,6 +2272,12 @@ function DailyBrief(){
         const d=await r.json();
         results.push({id:rec.id,ok:d.ok||false});
       }
+      // Apply tunings to Settings DB after writing to Tuning Log
+      try{
+        const applyR=await fetch('/api/apply-tunings',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        const applyD=await applyR.json();
+        if(applyD.applied>0)console.log(`[apply-tunings] ${applyD.applied} tuning(s) applied to Settings DB`);
+      }catch(e2){console.warn('[apply-tunings]',e2.message);}
       setApplyStatus('done');
       // Refresh positions to get updated data
       setTimeout(fetchPositions,1000);

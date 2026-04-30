@@ -2110,17 +2110,10 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   analysis.draftsSkipped = draftsSkipped;
   analysis.wallet = walletState;
 
-  // Mark approved tunings as Applied (fire-and-forget)
-  if (approvedTunings && approvedTunings.length > 0 && NOTION_TOKEN) {
-    for (const t of approvedTunings) {
-      if (t.pageId) {
-        notionPatch(t.pageId, {
-          'Status': { select: { name: 'Applied' } },
-          'Date Applied': { date: { start: new Date().toISOString().split('T')[0] } },
-        }, NOTION_TOKEN).catch(() => {});
-      }
-    }
-  }
+  // Tuning application is now handled by /api/apply-tunings endpoint
+  // (called by the dashboard after evaluation completes)
+  // The old fire-and-forget approach was unreliable on Vercel —
+  // the process would be killed before the PATCH completed.
 
   if (isDiagnoseMode && diagnosticData) analysis._diagnostics = diagnosticData;
   if (isConsistencyMode && consistencyReport) analysis._consistency = consistencyReport;
