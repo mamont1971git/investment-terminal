@@ -912,6 +912,30 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
         rawTail: r.raw ? r.raw.slice(-500) : null,
         rawLength: r.raw ? r.raw.length : 0,
       }));
+      // Server-side log to Notion Error Log (non-blocking)
+      const ERROR_LOG_DB = '9e459182b763489bbed331506762bd11';
+      const realError = allRuns.map(r => r.error || r.parseError).filter(Boolean).join('; ');
+      if (NOTION_TOKEN) {
+        const logBody = JSON.stringify({
+          parent: { database_id: ERROR_LOG_DB },
+          properties: {
+            'Error': { title: [{ text: { content: ('API_FAIL: ' + realError).slice(0, 100) } }] },
+            'Type': { select: { name: 'API_FAIL' } },
+            'Source': { select: { name: 'Server' } },
+            'Message': { rich_text: [{ text: { content: realError.slice(0, 500) } }] },
+            'Context': { rich_text: [{ text: { content: JSON.stringify({ model: modelId, mode: resolvedMode, phase: splitRole || phase, contextLen: context.length }).slice(0, 500) } }] },
+            'Resolved': { checkbox: false },
+            'Timestamp': { date: { start: new Date().toISOString() } },
+          },
+        });
+        const logReq = https.request({ hostname: 'api.notion.com', path: '/v1/pages', method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + NOTION_TOKEN, 'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(logBody) },
+        }, () => {});
+        logReq.on('error', () => {});
+        logReq.write(logBody);
+        logReq.end();
+      }
       return res.status(500).json({
         error: 'Claude call failed',
         runs: allRuns.map(r => r.error || r.parseError),

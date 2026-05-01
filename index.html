@@ -1353,7 +1353,7 @@ function AnalysisPanel({onPositionsUpdate}){
             context:`ctx:${(dbg.contextLength/1000).toFixed(1)}k, sys:${(dbg.sysPromptLength/1000).toFixed(1)}k`,
             hint:d.stopReason==='max_tokens'?'Response truncated — too many positions for token limit':
               (runErrors.includes('overloaded')?'Anthropic API overloaded — retry in a minute':'')});
-          logError('SPLIT_POS_ERROR',posData.error,{stop:d.stopReason,tokens:d.tokensUsed,runErrors,contextLen:dbg.contextLength});
+          logError('SPLIT_POS_ERROR',runErrors||posData.error,{stop:d.stopReason,tokens:d.tokensUsed,runErrors,contextLen:dbg.contextLength,model:dbg.model});
         }
         if(oppData.error){
           const d=oppData._errorDetail?.[0]||{};
@@ -1365,10 +1365,28 @@ function AnalysisPanel({onPositionsUpdate}){
             context:`ctx:${(dbg.contextLength/1000).toFixed(1)}k, sys:${(dbg.sysPromptLength/1000).toFixed(1)}k`,
             hint:d.stopReason==='max_tokens'?'Response truncated — increase token limit':
               (runErrors.includes('overloaded')?'Anthropic API overloaded — retry in a minute':'')});
-          logError('SPLIT_OPP_ERROR',oppData.error,{stop:d.stopReason,tokens:d.tokensUsed,runErrors,contextLen:dbg.contextLength});
+          logError('SPLIT_OPP_ERROR',runErrors||oppData.error,{stop:d.stopReason,tokens:d.tokensUsed,runErrors,contextLen:dbg.contextLength,model:dbg.model});
         }
         if(posData.error&&oppData.error){
-          throw new Error(`Both calls failed | pos: ${posData.error} | opp: ${oppData.error}`);
+          // Extract the REAL API error from runs array (not the generic "Claude call failed")
+          const posReal=(posData.runs||[]).filter(Boolean).join('; ')||posData.error;
+          const oppReal=(oppData.runs||[]).filter(Boolean).join('; ')||oppData.error;
+          // Detect common error patterns and show actionable message
+          const combined=posReal+' '+oppReal;
+          let userMsg='Both analysis calls failed';
+          if(/credit balance.*too low|billing|payment/i.test(combined))
+            userMsg='Anthropic API credits exhausted — add funds at console.anthropic.com';
+          else if(/authentication|invalid.*key|unauthorized/i.test(combined))
+            userMsg='Anthropic API key is invalid or expired — update in Vercel env vars';
+          else if(/overloaded|capacity|rate.?limit|529/i.test(combined))
+            userMsg='Anthropic API is overloaded — retry in 1-2 minutes';
+          else if(/timeout|ETIMEDOUT|ECONNRESET/i.test(combined))
+            userMsg='API request timed out — check network or retry';
+          else userMsg=`Analysis failed: ${posReal.slice(0,120)}`;
+          // Log the FULL detail to Notion (not the generic message)
+          logError('ANALYSIS_FAILED',userMsg,{posError:posReal.slice(0,300),oppError:oppReal.slice(0,300),
+            posModel:posData._debug?.model,oppModel:oppData._debug?.model});
+          throw new Error(userMsg);
         }
         // Merge results: positions from Haiku, opportunities from Sonnet
         const merged={
