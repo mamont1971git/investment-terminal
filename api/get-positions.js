@@ -405,6 +405,62 @@ module.exports = async (req, res) => {
     if (parsed.action === 'tuning_log') {
       const rec = parsed.rec;
       if (!rec || !rec.title) return res.status(400).json({ error: 'rec.title required' });
+
+      // ── Dedup guard: check if an Approved tuning with the same category already exists ──
+      // If the AI proposes a "supersedes" field, mark the old tuning as Reverted first.
+      try {
+        const dedupFilter = {
+          and: [
+            { property: 'Status', select: { equals: 'Approved' } },
+            { property: 'Category', select: { equals: rec.category || 'scoring' } },
+          ],
+        };
+        const dedupBody = JSON.stringify({ filter: dedupFilter, page_size: 20 });
+        const existingTunings = await new Promise((resolve) => {
+          const dedupReq = https.request({
+            hostname: 'api.notion.com', path: `/v1/databases/${TUNING_DB}/query`, method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28', 'Content-Length': Buffer.byteLength(dedupBody) },
+          }, r => { let d = ''; r.on('data', c => d += c); r.on('end', () => {
+            try { resolve(JSON.parse(d).results || []); } catch { resolve([]); }
+          }); });
+          dedupReq.on('error', () => resolve([]));
+          dedupReq.write(dedupBody); dedupReq.end();
+        });
+
+        if (existingTunings.length > 0) {
+          // Check for near-duplicate: same category, similar title keywords
+          const newTitleLower = (rec.title || '').toLowerCase();
+          const newParamLower = (rec.paramAfter || '').toLowerCase();
+          for (const existing of existingTunings) {
+            const existTitle = (existing.properties?.['Recommendation']?.title?.[0]?.plain_text || '').toLowerCase();
+            const existParam = (existing.properties?.['Parameter After']?.rich_text?.[0]?.plain_text || '').toLowerCase();
+            // Simple similarity: shared significant keywords (3+ chars)
+            const newWords = newTitleLower.split(/\s+/).filter(w => w.length > 3);
+            const existWords = existTitle.split(/\s+/).filter(w => w.length > 3);
+            const overlap = newWords.filter(w => existWords.includes(w)).length;
+            const similarity = newWords.length > 0 ? overlap / newWords.length : 0;
+            // If >50% word overlap OR same paramAfter, it's a duplicate
+            if (similarity > 0.5 || (newParamLower && existParam && newParamLower === existParam)) {
+              // If rec has "supersedes" field, mark old one as Reverted
+              if (rec.supersedes) {
+                try {
+                  await notionPatch(existing.id, {
+                    'Status': { select: { name: 'Reverted' } },
+                    'Date Applied': { date: { start: new Date().toISOString().split('T')[0] } },
+                  }, TOKEN);
+                } catch {}
+              } else {
+                // Skip this duplicate
+                return res.json({ ok: false, skipped: true, reason: 'Duplicate of existing tuning', existingId: existing.id, existingTitle: existTitle });
+              }
+            }
+          }
+        }
+      } catch (dedupErr) {
+        // Dedup check failed — proceed anyway, better to have a duplicate than lose a rec
+      }
+
       const today = new Date().toISOString();
       const props = {
         'Recommendation': { title: [{ text: { content: rec.title } }] },

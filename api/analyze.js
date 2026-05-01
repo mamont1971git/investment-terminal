@@ -1656,6 +1656,11 @@ ${JSON.stringify(diagnosticData, null, 2)}` : 'Diagnostic engine unavailable —
 ${swData ? `SIGNAL SOURCE RELIABILITY (MWU Algorithm):
 ${swData.ranked.map(s => `  ${s.rank}. ${s.source}: ${s.weight}% weight | ${s.winRate != null ? s.winRate + '% WR' : 'no data'} (${s.wins}W/${s.losses}L) | conf: ${s.confidence}`).join('\n')}` : ''}
 
+${approvedTunings && approvedTunings.length > 0 ? `
+EXISTING ACTIVE TUNINGS (${approvedTunings.length} currently approved — DO NOT DUPLICATE):
+${approvedTunings.map((t, i) => `  ${i+1}. [${t.category.toUpperCase()}] ${t.recommendation}
+     Rule: ${t.paramAfter}`).join('\n')}
+` : ''}
 YOUR TASK: Produce specific, actionable tuning recommendations. For each finding, propose a concrete parameter change that could improve performance.
 
 Respond with JSON (no markdown):
@@ -1697,6 +1702,7 @@ You are an autonomous system. Your recommendations will be AUTOMATICALLY APPLIED
 3. NO ARBITRARY WEIGHTS: Do NOT propose signal source weight changes unless you have win-rate-by-source data showing statistically significant differences. Equal weights with MWU organic adjustment is the correct approach during data collection phase.
 4. CONFLICT CHECK: Do NOT recommend changes that would invalidate current open positions. Check the open positions list — if a rec would trigger an immediate stop-loss or force-close on an open position, EXCLUDE it or defer it with "applyAfter" field.
 5. ACTIONABLE & SPECIFIC: "Adjust scoring" is useless. "Raise draft threshold from 65 to 72 for Earnings Catalyst strategy based on 3/4 sub-70 entries losing money" is actionable.
+6. NO DUPLICATES: Check the EXISTING ACTIVE TUNINGS list above. Do NOT propose a recommendation that covers the same parameter or behavior as an existing active tuning. If you want to MODIFY an existing tuning (e.g., change the threshold from 76 to 78), explicitly reference which existing tuning it supersedes by including "supersedes": "short title of existing tuning" in your recommendation. Never propose something already covered.
 
 Each recommendation must include:
 - "qualityScore": 1-10 (your confidence this will improve outcomes based on evidence)
