@@ -1022,6 +1022,13 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
     analysis.draftsCreated = draftsCreated;
     analysis.draftsSkipped = draftsSkipped;
     analysis.priceAlerts = (analysis.opportunities || []).filter(o => o._priceAlert).map(o => ({ ticker: o.ticker, alert: o._priceAlert }));
+    // Strip held tickers from opportunities so the UI never shows "BUY" for something already owned
+    if (analysis.opportunities) {
+      analysis.opportunities = analysis.opportunities.filter(o => {
+        if (!o.ticker) return true;
+        return !openTickerSet.has(o.ticker.toUpperCase());
+      });
+    }
     return res.json(analysis);
   }
 
