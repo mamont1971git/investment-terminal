@@ -672,30 +672,37 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   const [showAllActions,setShowAllActions]=useState(false);
   const [showDetails,setShowDetails]=useState(false); // must be before any conditional returns
 
-  const handleClose=async(action,label)=>{
+  const handleClose=async(action,label,opts={})=>{
     // Tighten stop is an update, not a close
     if(action==='tighten_stop'){
-      // Smart stop tightening: only to breakeven if profitable enough
       const pnlPct=t.currentPrice&&t.entryPrice?((t.currentPrice-t.entryPrice)/t.entryPrice*100):0;
       const origStop=t.stop||t.stopLoss||(t.entryPrice*0.93);
       let newStop;
-      if(pnlPct>=3){
-        // Profitable enough — tighten to breakeven
-        newStop=t.entryPrice;
-      } else if(pnlPct>=0){
-        // Slightly positive — tighten to midpoint between original stop and entry
-        newStop=+((origStop+t.entryPrice)/2).toFixed(2);
+
+      // If the card/analysis provided a specific target stop, USE IT — don't recalculate
+      const targetFromLabel=label&&label.match(/\$(\d+\.?\d*)/);
+      if(opts.targetStop){
+        newStop=opts.targetStop;
+      } else if(targetFromLabel){
+        newStop=parseFloat(targetFromLabel[1]);
       } else {
-        // Losing trade — keep original stop, don't tighten
-        alert(`${t.ticker} is down ${fmt(Math.abs(pnlPct),1)}% — tightening stop would make it worse. Keeping original stop at $${fmt(origStop)}.`);
+        // Fallback: calculate based on P&L
+        if(pnlPct>=3) newStop=t.entryPrice;
+        else if(pnlPct>=0) newStop=+((origStop+t.entryPrice)/2).toFixed(2);
+        else newStop=+((origStop+t.entryPrice)/2).toFixed(2); // midpoint is still tighter than original
+      }
+
+      // Safety: never set stop above current price (would trigger immediately)
+      if(t.currentPrice&&newStop>=t.currentPrice){newStop=+(t.currentPrice*0.97).toFixed(2);}
+      // Safety: never set stop below original stop (that would loosen, not tighten)
+      if(newStop<origStop)newStop=origStop;
+      // If after all guards the stop hasn't actually changed, inform user
+      if(Math.abs(newStop-origStop)<0.01){
+        alert(`${t.ticker} stop is already at $${fmt(origStop)} — no change needed.`);
         return;
       }
-      // Never set stop above current price
-      if(t.currentPrice&&newStop>=t.currentPrice){newStop=+(t.currentPrice*0.97).toFixed(2);}
-      // Never set stop below original stop (that would loosen it)
-      if(newStop<origStop)newStop=origStop;
-      const label=newStop===t.entryPrice?`breakeven ($${fmt(newStop)})`:`$${fmt(newStop)} (tightened from $${fmt(origStop)})`;
-      if(!confirm(`Tighten stop for ${t.ticker} to ${label}?\n\nP&L: ${pnlPct>=0?'+':''}${fmt(pnlPct,1)}%\nThis updates the stop-loss in Notion.`))return;
+      const stopLabel=newStop===t.entryPrice?`breakeven ($${fmt(newStop)})`:`$${fmt(newStop)} (from $${fmt(origStop)})`;
+      if(!confirm(`Tighten stop for ${t.ticker} to ${stopLabel}?\n\nP&L: ${pnlPct>=0?'+':''}${fmt(pnlPct,1)}%\nThis updates the stop-loss in Notion.`))return;
       setClosing(action);
       try{
         const r=await fetch('/api/get-positions',{
@@ -816,7 +823,7 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     primaryAction='exit_now';primaryLabel=`Exit Now @ $${fmt(_price)}`;
   } else if(_rec==='TIGHTEN_STOP'){
     // AI explicitly recommends tighten — always trust it. Calculate a reasonable stop level.
-    const _aiStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||((_entry||t.entry)*0.93);if(pnl>=3)return _entry;if(pnl>=1)return+((orig+_entry)/2).toFixed(2);return+((orig+_entry)/2).toFixed(2);})();
+    const _aiStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||((_entry||t.entry)*0.93);const _e=_entry||t.entry;if(pnl>=3)return _e;if(pnl>=0)return+((orig+_e)/2).toFixed(2);return+(orig+(_e-orig)*0.3).toFixed(2);})();
     verdict='TIGHTEN STOP';verdictIcon=t.urgency==='urgent'?'⚡':'🔧';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
     verdictReason=t.right?t.right.slice(0,200):`AI recommends tightening stop to $${fmt(_aiStop)}.${_earningsWarn}`;
     primaryAction='tighten_stop';primaryLabel=`Tighten Stop → $${fmt(_aiStop)}`;
@@ -826,12 +833,12 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
     primaryAction='exit_now';primaryLabel=`Exit @ $${fmt(_price)}`;
   } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3&&_aboveEntry>=0&&_aboveEntry<3){
     verdict='TIGHTEN — EARNINGS';verdictIcon='⚡';verdictColor='#f59e0b';verdictBg='#1a0c08';verdictBorder='#78350f';
-    const _earningsStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||(t.entry*0.93);if(pnl>=3)return t.entry;if(pnl>=0)return+((orig+t.entry)/2).toFixed(2);return null;})();
+    const _earningsStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||(t.entry*0.93);const _e=_entry||t.entry;if(pnl>=3)return _e;if(pnl>=0)return+((orig+_e)/2).toFixed(2);return+(orig+(_e-orig)*0.3).toFixed(2);})();
     verdictReason=`Up +${fmt(_aboveEntry,1)}% but thin cushion. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. ${_earningsStop?`Tightening stop to $${fmt(_earningsStop)}.`:'Keep original stop.'}`;
     primaryAction=_earningsStop?'tighten_stop':'hold';primaryLabel=_earningsStop?`Tighten Stop → $${fmt(_earningsStop)}`:'Hold — Keep Stop';
   } else if(_hasEarnings&&_earningsDays!=null&&_earningsDays<=3){
     verdict='HOLD — EARNINGS WATCH';verdictIcon='⚡';verdictColor='#22c55e';verdictBg='#0a1a0d';verdictBorder='#14532d';
-    const _earningsWatchStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||(t.entry*0.93);if(pnl>=3)return t.entry;if(pnl>=0)return+((orig+t.entry)/2).toFixed(2);return null;})();
+    const _earningsWatchStop=(()=>{const pnl=_aboveEntry||0;const orig=_stop||(t.entry*0.93);const _e=_entry||t.entry;if(pnl>=3)return _e;if(pnl>=0)return+((orig+_e)/2).toFixed(2);return+(orig+(_e-orig)*0.3).toFixed(2);})();
     verdictReason=`Up +${fmt(_aboveEntry,1)}%. Earnings in ${_earningsDays} day${_earningsDays!==1?'s':''}. Good cushion — ${_earningsWatchStop?`tightening stop to $${fmt(_earningsWatchStop)}.`:'holding with current stop.'}`;
     primaryAction=_earningsWatchStop?'tighten_stop':'hold';primaryLabel=_earningsWatchStop?`Tighten Stop → $${fmt(_earningsWatchStop)}`:'Hold — Keep Stop';
   } else if(_aboveEntry>=0){
