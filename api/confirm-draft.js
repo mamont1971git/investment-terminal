@@ -98,6 +98,19 @@ module.exports = async (req, res) => {
     return res.json({ok:r.object!=='error', action:'rejected'});
   }
 
+  // Queue for market open — mark as Queued, don't execute yet
+  if (action === 'queue') {
+    const draft = await notionGet(notionId, TOKEN);
+    const ticker = draft.properties?.['Ticker']?.rich_text?.[0]?.plain_text || 'TRADE';
+    const strategy = draft.properties?.['Strategy']?.select?.name || '';
+    await notionPatch(notionId, {
+      'Status':          {select:{name:'Queued'}},
+      'Trade':           {title:[{text:{content:`🕐 ${ticker} — ${strategy} [QUEUED]`}}]},
+    }, TOKEN);
+    return res.json({ok:true, action:'queued', notionId,
+      message:`${ticker} queued — will execute at next market open with live price`});
+  }
+
   if (action === 'confirm') {
     const tradingMode = mode || 'dry-run';
 

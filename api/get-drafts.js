@@ -4,7 +4,10 @@ const TRADE_DB = '661bed1034ae4030be88d3ee7d125d42';
 
 function notionQuery(token) {
   return new Promise((resolve,reject)=>{
-    const data=JSON.stringify({filter:{property:'Status',select:{equals:'Draft'}},page_size:20});
+    const data=JSON.stringify({filter:{or:[
+      {property:'Status',select:{equals:'Draft'}},
+      {property:'Status',select:{equals:'Queued'}},
+    ]},page_size:20});
     const req=https.request({
       hostname:'api.notion.com',path:`/v1/databases/${TRADE_DB}/query`,method:'POST',
       headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json','Notion-Version':'2022-06-28','Content-Length':Buffer.byteLength(data)}
@@ -22,6 +25,7 @@ module.exports = async (req, res) => {
     const result = await notionQuery(TOKEN);
     const drafts = (result.results||[]).map(p=>({
       id: p.id,
+      status: p.properties['Status']?.select?.name || 'Draft',
       ticker: p.properties['Ticker']?.rich_text?.[0]?.plain_text || '',
       strategy: p.properties['Strategy']?.select?.name || '',
       entryPrice: p.properties['Entry Price']?.number,

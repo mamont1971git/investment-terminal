@@ -117,6 +117,52 @@ function SettingsProvider({children}){
 }
 function useSettings(){return React.useContext(SettingsContext);}
 
+// ─── market hours utility — US Eastern Time ─────────────────────────────────
+// NYSE/NASDAQ: Mon–Fri 9:30 AM – 4:00 PM ET, excluding US market holidays
+const US_MARKET_HOLIDAYS_2026 = [
+  '2026-01-01','2026-01-19','2026-02-16','2026-04-03',
+  '2026-05-25','2026-06-19','2026-07-03','2026-09-07',
+  '2026-11-26','2026-12-25',
+];
+function getMarketStatus() {
+  const now = new Date();
+  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day = et.getDay(); // 0=Sun, 6=Sat
+  const h = et.getHours(), m = et.getMinutes();
+  const mins = h * 60 + m; // minutes since midnight ET
+  const dateStr = et.toISOString().split('T')[0];
+  const isHoliday = US_MARKET_HOLIDAYS_2026.includes(dateStr);
+  const isWeekend = day === 0 || day === 6;
+  const isOpen = !isWeekend && !isHoliday && mins >= 570 && mins < 960; // 9:30=570, 16:00=960
+  const preMarket = !isWeekend && !isHoliday && mins >= 240 && mins < 570; // 4:00 AM - 9:30 AM
+  const afterHours = !isWeekend && !isHoliday && mins >= 960 && mins < 1200; // 4:00 PM - 8:00 PM
+
+  let label, nextOpen;
+  if (isOpen) {
+    label = 'Market Open';
+    const closeMin = 960 - mins;
+    nextOpen = null;
+  } else if (preMarket) {
+    label = 'Pre-Market';
+    const openMin = 570 - mins;
+    nextOpen = `Opens in ${Math.floor(openMin/60)}h ${openMin%60}m`;
+  } else if (afterHours) {
+    label = 'After Hours';
+    nextOpen = 'Opens tomorrow 9:30 AM ET';
+  } else if (isWeekend) {
+    label = 'Weekend';
+    const daysToMon = day === 0 ? 1 : 2; // Sun=1, Sat=2
+    nextOpen = `Opens Monday 9:30 AM ET`;
+  } else if (isHoliday) {
+    label = 'Market Holiday';
+    nextOpen = 'Opens next trading day 9:30 AM ET';
+  } else {
+    label = 'Market Closed';
+    nextOpen = 'Opens 9:30 AM ET';
+  }
+  return { isOpen, label, nextOpen, preMarket, afterHours, isWeekend, isHoliday, etTime: et };
+}
+
 // ─── error logging — saves locally + auto-pushes to Notion via API ──────────
 function logError(type,message,context={}){
   const entry={
@@ -425,7 +471,14 @@ function OrderDrafts(){
   const [drafts,setDrafts]=useState([]);
   const [loading,setLoading]=useState(true);
   const [acting,setActing]=useState(null);
+  const [marketStatus,setMarketStatus]=useState(()=>getMarketStatus());
   const {tradingMode:mode,setTradingMode}=useSettings();
+
+  // Refresh market status every 30s
+  useEffect(()=>{
+    const t=setInterval(()=>setMarketStatus(getMarketStatus()),30000);
+    return()=>clearInterval(t);
+  },[]);
 
   const fetchDrafts=useCallback(async()=>{
     if(window.location.protocol==='file:'){setLoading(false);return;}
@@ -451,6 +504,22 @@ function OrderDrafts(){
   },[fetchDrafts]);
 
   const act=async(notionId,action)=>{
+    // For confirm action: check market hours
+    if(action==='confirm'&&!marketStatus.isOpen){
+      // Queue for market open instead of executing now
+      setActing(notionId+action);
+      try{
+        const r=await fetch('/api/confirm-draft',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({notionId,action:'queue',mode}),
+        });
+        const d=await r.json();
+        if(d.ok) await fetchDrafts();
+        else alert(d.message||d.error||'Failed to queue');
+      }catch(e){alert('Error: '+e.message);}
+      finally{setActing(null);}
+      return;
+    }
     setActing(notionId+action);
     try{
       const r=await fetch('/api/confirm-draft',{
@@ -463,7 +532,7 @@ function OrderDrafts(){
         setTradingMode('dry-run');
       }
       if(d.action==='wallet-blocked'){
-        alert('💰 INSUFFICIENT FUNDS\n\n'+d.message);
+        alert('Insufficient funds: '+d.message);
         return;
       }
       await fetchDrafts();
@@ -472,6 +541,30 @@ function OrderDrafts(){
     }catch(e){alert('Error: '+e.message);}
     finally{setActing(null);}
   };
+
+  // Auto-execute queued orders when market opens
+  const [queueMsg,setQueueMsg]=useState(null);
+  useEffect(()=>{
+    if(!marketStatus.isOpen)return;
+    const queued=drafts.filter(d=>d.status==='Queued');
+    if(queued.length===0)return;
+    // Execute queued orders
+    (async()=>{
+      try{
+        setQueueMsg(`Executing ${queued.length} queued order(s) at market open...`);
+        const r=await fetch('/api/execute-queued',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        const d=await r.json();
+        if(d.executed>0){
+          setQueueMsg(`${d.executed} queued order(s) filled at live prices`);
+          await fetchDrafts();
+          window.dispatchEvent(new Event('refreshDrafts'));
+          setTimeout(()=>setQueueMsg(null),8000);
+        } else {
+          setQueueMsg(null);
+        }
+      }catch(e){setQueueMsg(null);logError('QUEUE_EXEC',e.message);}
+    })();
+  },[marketStatus.isOpen,drafts.length]);
 
   if(loading||!drafts.length)return null;
 
@@ -485,18 +578,35 @@ function OrderDrafts(){
             {drafts.length} Order Draft{drafts.length>1?'s':''} — Awaiting Your Decision
           </span>
         </div>
-        <TradingModeSelector/>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span style={{width:6,height:6,borderRadius:'50%',display:'inline-block',
+              background:marketStatus.isOpen?'#22c55e':'#ef4444'}}/>
+            <span className="text-xs font-bold" style={{color:marketStatus.isOpen?'#22c55e':'#ef4444'}}>
+              {marketStatus.label}
+            </span>
+            {marketStatus.nextOpen&&<span className="text-xs text-gray-500">· {marketStatus.nextOpen}</span>}
+          </div>
+          <TradingModeSelector/>
+        </div>
       </div>
+      {queueMsg&&(
+        <div className="px-4 py-2 text-xs font-bold"style={{background:'#1e3a5f',color:'#60a5fa',borderBottom:'1px solid #3b82f633'}}>
+          🕐 {queueMsg}
+        </div>
+      )}
       {drafts.map(d=>{
         const isActing=acting&&acting.startsWith(d.id);
+        const isQueued=d.status==='Queued';
         const modeLabel=mode==='dry-run'?'Paper Trade':'IBKR Order';
         return(
-          <div key={d.id} className="px-4 py-4"style={{borderTop:'1px solid #0f1828',background:'#0e0c00'}}>
+          <div key={d.id} className="px-4 py-4"style={{borderTop:'1px solid #0f1828',background:isQueued?'#0c0e1a':'#0e0c00'}}>
             {/* Header row */}
             <div className="flex items-start justify-between gap-3 mb-3">
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <TickerLabel ticker={d.ticker} className="font-black text-xl text-white"/>
+                  {isQueued&&<Pill text="QUEUED" color="#3b82f6"/>}
                   <span className="text-xs text-gray-500">{d.strategy}</span>
                   {d.score&&<Pill text={`Score ${d.score}`}
                     color={d.score>=80?'#22c55e':d.score>=65?'#84cc16':'#f59e0b'}/>}
@@ -521,12 +631,21 @@ function OrderDrafts(){
             </div>
             {/* Action buttons */}
             <div className="flex gap-3">
-              <button onClick={()=>act(d.id,'confirm')} disabled={!!isActing}
-                className="flex-1 py-3 rounded-2xl font-bold text-sm transition-all"
-                style={{background:isActing==='confirm'?'#14532d':'#22c55e',color:'#000',
-                  opacity:isActing?0.7:1}}>
-                ✅ Confirm — {modeLabel}
-              </button>
+              {marketStatus.isOpen ? (
+                <button onClick={()=>act(d.id,'confirm')} disabled={!!isActing}
+                  className="flex-1 py-3 rounded-2xl font-bold text-sm transition-all"
+                  style={{background:isActing?'#14532d':'#22c55e',color:'#000',
+                    opacity:isActing?0.7:1}}>
+                  {isActing?'Confirming…':`✅ Confirm — ${modeLabel}`}
+                </button>
+              ) : (
+                <button onClick={()=>act(d.id,'confirm')} disabled={!!isActing}
+                  className="flex-1 py-3 rounded-2xl font-bold text-sm transition-all"
+                  style={{background:isActing?'#1e3a5f':'#3b82f6',color:'#fff',
+                    opacity:isActing?0.7:1}}>
+                  {isActing?'Queuing…':'🕐 Queue for Market Open'}
+                </button>
+              )}
               <button onClick={()=>act(d.id,'reject')} disabled={!!isActing}
                 className="px-5 py-3 rounded-2xl font-bold text-sm"
                 style={{background:'#1a0c0c',color:'#f87171',border:'1px solid #7f1d1d',
@@ -535,6 +654,7 @@ function OrderDrafts(){
               </button>
             </div>
             <div className="text-xs text-center mt-2"style={{color:'#4b5563'}}>
+              {!marketStatus.isOpen&&<span style={{color:'#3b82f6'}}>After-hours — order will execute at next open with live price · </span>}
               Mode: <span style={{color:mode==='dry-run'?'#818cf8':'#22c55e'}}>{mode==='dry-run'?'Dry Run (paper trade)':'IBKR (real order)'}</span>
             </div>
           </div>
@@ -1026,18 +1146,20 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
 
   const confirmDraft=async()=>{
     if(!existingDraft)return;
+    const ms=getMarketStatus();
+    const actionType=ms.isOpen?'confirm':'queue';
     setConfirming(true);
     try{
       const r=await fetch('/api/confirm-draft',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({notionId:existingDraft.id,action:'confirm',mode}),
+        body:JSON.stringify({notionId:existingDraft.id,action:actionType,mode}),
       });
       const d=await r.json();
       if(d.action==='ibkr-not-connected'){
         alert('IBKR not yet connected.\n\n'+d.message+'\n\nSwitching to Dry Run.');
         setTradingMode('dry-run');
       } else if(d.action==='wallet-blocked'){
-        alert('💰 INSUFFICIENT FUNDS\n\n'+d.message);
+        alert('Insufficient funds: '+d.message);
         return;
       } else {
         setConfirmed(true);
@@ -1086,11 +1208,19 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
         </div>
       ):existingDraft?(
         <div className="flex gap-2">
-          <button onClick={confirmDraft} disabled={confirming}
-            className="flex-1 py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
-            style={{background:confirming?'#14532d':'#22c55e',color:'#000',opacity:confirming?0.7:1}}>
-            {confirming?<><span className="inline-block w-3 h-3 rounded-full border-2 spin mr-2"style={{borderColor:'#000',borderTopColor:'transparent'}}/>Confirming…</>:`✅ Draft Exists — Confirm ${modeLabel}`}
-          </button>
+          {(()=>{const ms=getMarketStatus(); return ms.isOpen?(
+            <button onClick={confirmDraft} disabled={confirming}
+              className="flex-1 py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
+              style={{background:confirming?'#14532d':'#22c55e',color:'#000',opacity:confirming?0.7:1}}>
+              {confirming?'Confirming…':`✅ Draft Exists — Confirm ${modeLabel}`}
+            </button>
+          ):(
+            <button onClick={confirmDraft} disabled={confirming}
+              className="flex-1 py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
+              style={{background:confirming?'#1e3a5f':'#3b82f6',color:'#fff',opacity:confirming?0.7:1}}>
+              {confirming?'Queuing…':'🕐 Queue for Market Open'}
+            </button>
+          );})()}
           <div className="flex items-center px-3 rounded-2xl text-xs"
             style={{background:'#1a1200',color:'#f59e0b',border:'1px solid #f59e0b33'}}>
             ⏳ Pending

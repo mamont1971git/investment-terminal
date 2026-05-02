@@ -154,6 +154,15 @@ module.exports = async (req, res) => {
   if (regimeName)    props['Market Regime at Entry'] = {select:{name:regimeName}};
   if (t.positionPct) props['Position Size %']        = {number:Number(t.positionPct)};
 
+  // Tag after-hours drafts
+  const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const etDay = etNow.getDay(), etMins = etNow.getHours() * 60 + etNow.getMinutes();
+  const marketOpen = etDay > 0 && etDay < 6 && etMins >= 570 && etMins < 960;
+  if (!marketOpen) {
+    props['What Went Right'].rich_text[0].text.content =
+      `[After-hours draft — entry price may differ at open] ` + props['What Went Right'].rich_text[0].text.content;
+  }
+
   const r = await notionPost('/v1/pages', { parent:{database_id:TRADE_DB}, properties:props }, TOKEN);
 
   if (r.status >= 300) {
