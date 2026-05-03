@@ -938,34 +938,44 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
           <div className="text-xs leading-relaxed"style={{color:verdictColor+'cc'}}>{verdictReason}</div>
         </div>
 
-        {/* ── PRIMARY ACTION BUTTON (if urgent) ── */}
-        {primaryAction&&(
-          <button onClick={()=>handleClose(primaryAction,primaryLabel)}
-            disabled={!!closing}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-black transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-40 mb-2"
-            style={{background:verdictColor+'22',border:`2px solid ${verdictColor}`,color:verdictColor}}>
-            {closing===primaryAction?<><Spin/><span>Closing…</span></>:<>
-              <span>{verdictIcon}</span>
-              <span>{primaryLabel}</span>
-            </>}
-          </button>
-        )}
+        {/* ── PRIMARY ACTION BUTTON (if urgent) — gate-aware ── */}
+        {primaryAction&&(()=>{
+          const pg=tradeActionGate(primaryAction,t.ticker);
+          const afterHrs=pg.afterHoursWarning||pg.transform==='queue';
+          return(
+            <div className="mb-2">
+              <button onClick={()=>handleClose(primaryAction,primaryLabel)}
+                disabled={!!closing}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-black transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-40"
+                style={{background:afterHrs?'#1e293b':verdictColor+'22',
+                  border:`2px solid ${afterHrs?'#475569':verdictColor}`,
+                  color:afterHrs?'#94a3b8':verdictColor}}>
+                {closing===primaryAction?<><Spin/><span>Closing…</span></>:<>
+                  <span>{afterHrs?'🕐':verdictIcon}</span>
+                  <span>{afterHrs?`${primaryLabel} (at next open)`:primaryLabel}</span>
+                </>}
+              </button>
+              {afterHrs&&<div className="text-xs text-center mt-1"style={{color:'#3b82f6'}}>Market closed — will update records now, executes at open in live trading</div>}
+            </div>
+          );
+        })()}
 
-        {/* ── SECONDARY ACTIONS (collapsed by default) ── */}
+        {/* ── SECONDARY ACTIONS (collapsed by default) — all gate-aware ── */}
+        {(()=>{const _mktGate=tradeActionGate('exit_now',t.ticker);const _ah=_mktGate.afterHoursWarning;return(
         <>
             <button onClick={()=>setShowAllActions(v=>!v)}
               className="w-full text-xs py-1 transition"style={{color:'#475569'}}>
               {showAllActions?'▲ Hide other actions':'▼ Other actions'}
             </button>
             {showAllActions&&(
-              <div className="grid grid-cols-2 gap-2 mt-2 fade">
+              <div className="grid grid-cols-2 gap-2 mt-2 fade"style={_ah?{opacity:0.6}:{}}>
                 {primaryAction!=='take_profit_1'&&(
                   <button onClick={()=>handleClose('take_profit_1',`Take Profit at TP1 ($${fmt(tp1)})`)}
                     disabled={!!closing}
                     className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-                    style={{background:'#0a1a0d88',border:'1px solid #22c55e33',opacity:0.7}}>
+                    style={{background:_ah?'#1e293b88':'#0a1a0d88',border:`1px solid ${_ah?'#47556933':'#22c55e33'}`,opacity:0.7}}>
                     {closing==='take_profit_1'?<Spin/>:<>
-                      <span style={{color:'#22c55e',fontSize:'11px'}}>TP1 @ ${fmt(tp1)}</span>
+                      <span style={{color:_ah?'#94a3b8':'#22c55e',fontSize:'11px'}}>{_ah?'🕐 ':''}TP1 @ ${fmt(tp1)}</span>
                       <span style={{color:'#4ade8088',fontSize:'10px'}}>{tp1Pct!=null&&`+${fmt(tp1Pct,1)}%`}</span>
                     </>}
                   </button>
@@ -974,9 +984,9 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
                   <button onClick={()=>handleClose('take_profit_2',`Take Profit at TP2 ($${fmt(tp2)})`)}
                     disabled={!!closing}
                     className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-                    style={{background:'#0a1a0d88',border:'1px solid #16a34a33',opacity:0.7}}>
+                    style={{background:_ah?'#1e293b88':'#0a1a0d88',border:`1px solid ${_ah?'#47556933':'#16a34a33'}`,opacity:0.7}}>
                     {closing==='take_profit_2'?<Spin/>:<>
-                      <span style={{color:'#16a34a',fontSize:'11px'}}>TP2 @ ${fmt(tp2)}</span>
+                      <span style={{color:_ah?'#94a3b8':'#16a34a',fontSize:'11px'}}>{_ah?'🕐 ':''}TP2 @ ${fmt(tp2)}</span>
                       <span style={{color:'#22c55e88',fontSize:'10px'}}>{tp2Pct!=null&&`+${fmt(tp2Pct,1)}%`}</span>
                     </>}
                   </button>
@@ -985,9 +995,9 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
                   <button onClick={()=>handleClose('exit_now','Exit Now at market price')}
                     disabled={!!closing}
                     className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-                    style={{background:'#1a080888',border:'1px solid #ef444433',opacity:0.7}}>
+                    style={{background:_ah?'#1e293b88':'#1a080888',border:`1px solid ${_ah?'#47556933':'#ef444433'}`,opacity:0.7}}>
                     {closing==='exit_now'?<Spin/>:<>
-                      <span style={{color:'#ef4444',fontSize:'11px'}}>Exit Now{_price?` @ $${fmt(_price)}`:''}</span>
+                      <span style={{color:_ah?'#94a3b8':'#ef4444',fontSize:'11px'}}>{_ah?'🕐 ':''}Exit Now{_price?` @ $${fmt(_price)}`:''}</span>
                       <span style={{color:currentProfit!=null&&currentProfit>0?'#4ade8088':'#f8717188',fontSize:'10px'}}>
                         {currentProfit!=null?`${currentProfit>0?'+':''}$${fmt(currentProfit,0)}`:'market'}
                       </span>
@@ -998,9 +1008,9 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
                   <button onClick={()=>handleClose('tighten_stop',`Tighten Stop → $${fmt(t.entryPrice)}`)}
                     disabled={!!closing}
                     className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-                    style={{background:'#0a0c1a88',border:'1px solid #3b82f633',opacity:0.7}}>
+                    style={{background:_ah?'#1e293b88':'#0a0c1a88',border:`1px solid ${_ah?'#47556933':'#3b82f633'}`,opacity:0.7}}>
                     {closing==='tighten_stop'?<Spin/>:<>
-                      <span style={{color:'#3b82f6',fontSize:'11px'}}>Tighten → ${fmt(t.entryPrice)}</span>
+                      <span style={{color:_ah?'#94a3b8':'#3b82f6',fontSize:'11px'}}>{_ah?'🕐 ':''}Tighten → ${fmt(t.entryPrice)}</span>
                       <span style={{color:'#3b82f688',fontSize:'10px'}}>breakeven</span>
                     </>}
                   </button>
@@ -1009,9 +1019,9 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
                   <button onClick={()=>handleClose('stopped_out',`Stopped Out @ $${fmt(t.stopLoss)}`)}
                     disabled={!!closing}
                     className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-                    style={{background:'#1a0c0888',border:'1px solid #f59e0b33',opacity:0.7}}>
+                    style={{background:_ah?'#1e293b88':'#1a0c0888',border:`1px solid ${_ah?'#47556933':'#f59e0b33'}`,opacity:0.7}}>
                     {closing==='stopped_out'?<Spin/>:<>
-                      <span style={{color:'#f59e0b',fontSize:'11px'}}>Stop @ ${fmt(t.stopLoss)}</span>
+                      <span style={{color:_ah?'#94a3b8':'#f59e0b',fontSize:'11px'}}>{_ah?'🕐 ':''}Stop @ ${fmt(t.stopLoss)}</span>
                       <span style={{color:'#f8717188',fontSize:'10px'}}>{stopPct!=null&&`${fmt(stopPct,1)}%`}</span>
                     </>}
                   </button>
@@ -1019,6 +1029,7 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
               </div>
             )}
           </>
+        );})()}
       </div>
 
       {/* ═══════════ DETAILS — collapsible info section ═══════════ */}
