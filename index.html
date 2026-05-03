@@ -163,6 +163,45 @@ function getMarketStatus() {
   return { isOpen, label, nextOpen, preMarket, afterHours, isWeekend, isHoliday, etTime: et };
 }
 
+// ─── TRADE ACTION GATE — centralized filter for ALL trade actions ────────────
+// Every action that moves money or changes positions goes through here.
+// Returns: {allowed:bool, action:string, message?:string, transform?:string}
+// transform='queue' means: proceed but as a queued order for next market open
+function tradeActionGate(action, ticker, context={}) {
+  const ms = getMarketStatus();
+  const result = { allowed: true, action, filters: [] };
+
+  // ── Filter 1: Market Hours ──
+  // All execution actions are gated. Analysis/research is always allowed.
+  const executionActions = ['confirm','create_draft','tighten_stop','exit_now',
+    'take_profit_1','take_profit_2','stopped_out'];
+  if (executionActions.includes(action) && !ms.isOpen) {
+    // Some actions can be queued, others must wait
+    const queueable = ['confirm','create_draft'];
+    const positionActions = ['tighten_stop','exit_now','take_profit_1','take_profit_2','stopped_out'];
+    if (queueable.includes(action)) {
+      result.transform = 'queue';
+      result.message = `Market closed (${ms.label}) — order will be queued for next open`;
+      result.filters.push('market_hours:queued');
+    } else if (positionActions.includes(action)) {
+      // Position management actions: allow the Notion update (it's a record-keeping action)
+      // but warn that in real trading this would only execute at market open
+      result.afterHoursWarning = true;
+      result.message = `${ms.label} — in live trading this would execute at next open`;
+      result.filters.push('market_hours:warned');
+    }
+  }
+
+  // ── Filter 2: Duplicate Position (extensible) ──
+  // Checked server-side in create-draft.js, but can add client-side pre-check here
+
+  // ── Filter 3: Future filters go here ──
+  // e.g., max daily trades, cooling period after 3 consecutive losses,
+  // sector concentration, max portfolio exposure, etc.
+
+  return result;
+}
+
 // ─── error logging — saves locally + auto-pushes to Notion via API ──────────
 function logError(type,message,context={}){
   const entry={
@@ -504,27 +543,17 @@ function OrderDrafts(){
   },[fetchDrafts]);
 
   const act=async(notionId,action)=>{
-    // For confirm action: check market hours
-    if(action==='confirm'&&!marketStatus.isOpen){
-      // Queue for market open instead of executing now
-      setActing(notionId+action);
-      try{
-        const r=await fetch('/api/confirm-draft',{
-          method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({notionId,action:'queue',mode}),
-        });
-        const d=await r.json();
-        if(d.ok) await fetchDrafts();
-        else alert(d.message||d.error||'Failed to queue');
-      }catch(e){alert('Error: '+e.message);}
-      finally{setActing(null);}
-      return;
+    // ── Centralized gate — all draft actions pass through here ──
+    const gate=tradeActionGate(action);
+    const effectiveAction=gate.transform==='queue'?'queue':action;
+    if(gate.message&&gate.transform==='queue'){
+      // Inform user the action is being queued
     }
     setActing(notionId+action);
     try{
       const r=await fetch('/api/confirm-draft',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({notionId,action,mode}),
+        body:JSON.stringify({notionId,action:effectiveAction,mode}),
       });
       const d=await r.json();
       if(d.action==='ibkr-not-connected'){
@@ -536,7 +565,6 @@ function OrderDrafts(){
         return;
       }
       await fetchDrafts();
-      // Refresh positions so newly confirmed trades appear in holdings
       window.dispatchEvent(new Event('refreshDrafts'));
     }catch(e){alert('Error: '+e.message);}
     finally{setActing(null);}
@@ -629,23 +657,16 @@ function OrderDrafts(){
                 </div>
               ))}
             </div>
-            {/* Action buttons */}
+            {/* Action buttons — derived from centralized gate */}
             <div className="flex gap-3">
-              {marketStatus.isOpen ? (
+              {(()=>{const g=tradeActionGate('confirm',d.ticker);const wq=g.transform==='queue';return(
                 <button onClick={()=>act(d.id,'confirm')} disabled={!!isActing}
                   className="flex-1 py-3 rounded-2xl font-bold text-sm transition-all"
-                  style={{background:isActing?'#14532d':'#22c55e',color:'#000',
-                    opacity:isActing?0.7:1}}>
-                  {isActing?'Confirming…':`✅ Confirm — ${modeLabel}`}
+                  style={{background:isActing?(wq?'#1e3a5f':'#14532d'):(wq?'#3b82f6':'#22c55e'),
+                    color:wq?'#fff':'#000',opacity:isActing?0.7:1}}>
+                  {isActing?(wq?'Queuing…':'Confirming…'):(wq?'🕐 Queue for Market Open':`✅ Confirm — ${modeLabel}`)}
                 </button>
-              ) : (
-                <button onClick={()=>act(d.id,'confirm')} disabled={!!isActing}
-                  className="flex-1 py-3 rounded-2xl font-bold text-sm transition-all"
-                  style={{background:isActing?'#1e3a5f':'#3b82f6',color:'#fff',
-                    opacity:isActing?0.7:1}}>
-                  {isActing?'Queuing…':'🕐 Queue for Market Open'}
-                </button>
-              )}
+              );})()}
               <button onClick={()=>act(d.id,'reject')} disabled={!!isActing}
                 className="px-5 py-3 rounded-2xl font-bold text-sm"
                 style={{background:'#1a0c0c',color:'#f87171',border:'1px solid #7f1d1d',
@@ -654,7 +675,7 @@ function OrderDrafts(){
               </button>
             </div>
             <div className="text-xs text-center mt-2"style={{color:'#4b5563'}}>
-              {!marketStatus.isOpen&&<span style={{color:'#3b82f6'}}>After-hours — order will execute at next open with live price · </span>}
+              {tradeActionGate('confirm',d.ticker).transform==='queue'&&<span style={{color:'#3b82f6'}}>After-hours — order will execute at next open with live price · </span>}
               Mode: <span style={{color:mode==='dry-run'?'#818cf8':'#22c55e'}}>{mode==='dry-run'?'Dry Run (paper trade)':'IBKR (real order)'}</span>
             </div>
           </div>
@@ -673,6 +694,12 @@ function PositionCard({t,pnl,recColor,tp1,tp2,tp3,shares,posValue,posPct,current
   const [showDetails,setShowDetails]=useState(false); // must be before any conditional returns
 
   const handleClose=async(action,label,opts={})=>{
+    // ── Centralized gate — all actions pass through here ──
+    const gate=tradeActionGate(action,t.ticker);
+    if(gate.afterHoursWarning){
+      if(!confirm(`⚠️ ${gate.message}\n\nProceed with updating ${t.ticker} in paper trading records?`))return;
+    }
+
     // Tighten stop is an update, not a close
     if(action==='tighten_stop'){
       const pnlPct=t.currentPrice&&t.entryPrice?((t.currentPrice-t.entryPrice)/t.entryPrice*100):0;
@@ -1133,6 +1160,7 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
 
   const createDraft=async()=>{
     if(window.location.protocol==='file:')return;
+    const gate=tradeActionGate('create_draft',o.ticker);
     setCreating(true);
     try{
       const r=await fetch('/api/create-draft',{
@@ -1146,9 +1174,8 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
       });
       const d=await r.json();
       if(d.ok){
-        // If market is closed, auto-queue the draft immediately
-        const ms=getMarketStatus();
-        if(!ms.isOpen&&d.notionId){
+        // If gate says queue (market closed), auto-queue the draft immediately
+        if(gate.transform==='queue'&&d.notionId){
           try{
             await fetch('/api/confirm-draft',{
               method:'POST',headers:{'Content-Type':'application/json'},
@@ -1165,8 +1192,8 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
 
   const confirmDraft=async()=>{
     if(!existingDraft)return;
-    const ms=getMarketStatus();
-    const actionType=ms.isOpen?'confirm':'queue';
+    const gate=tradeActionGate('confirm',o.ticker);
+    const actionType=gate.transform==='queue'?'queue':'confirm';
     setConfirming(true);
     try{
       const r=await fetch('/api/confirm-draft',{
@@ -1214,51 +1241,52 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
           ))}
         </div>
       )}
-      {/* Draft / Confirm button — context-aware */}
-      {confirmed?(
-        <div className="flex items-center gap-2 py-2 px-3 rounded-xl text-xs font-bold"
-          style={{background:'#0f1a0f',color:'#22c55e',border:'1px solid #22c55e44'}}>
-          ✅ Confirmed as {modeLabel} — position is now open
-        </div>
-      ):drafted?(
-        <div className="flex items-center gap-2 py-2 px-3 rounded-xl text-xs font-bold"
-          style={{background:getMarketStatus().isOpen?'#0f1a0f':'#0c1425',color:getMarketStatus().isOpen?'#22c55e':'#60a5fa',
-            border:`1px solid ${getMarketStatus().isOpen?'#22c55e44':'#3b82f644'}`}}>
-          {getMarketStatus().isOpen?'✅ Draft created — confirm or reject in Order Drafts above':'🕐 Queued for market open — will execute at live price Monday 9:30 AM ET'}
-        </div>
-      ):existingDraft?(
-        <div className="flex gap-2">
-          {(()=>{const ms=getMarketStatus(); return ms.isOpen?(
-            <button onClick={confirmDraft} disabled={confirming}
-              className="flex-1 py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
-              style={{background:confirming?'#14532d':'#22c55e',color:'#000',opacity:confirming?0.7:1}}>
-              {confirming?'Confirming…':`✅ Draft Exists — Confirm ${modeLabel}`}
-            </button>
-          ):(
-            <button onClick={confirmDraft} disabled={confirming}
-              className="flex-1 py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
-              style={{background:confirming?'#1e3a5f':'#3b82f6',color:'#fff',opacity:confirming?0.7:1}}>
-              {confirming?'Queuing…':'🕐 Queue for Market Open'}
-            </button>
-          );})()}
-          <div className="flex items-center px-3 rounded-2xl text-xs"
-            style={{background:'#1a1200',color:'#f59e0b',border:'1px solid #f59e0b33'}}>
-            ⏳ Pending
+      {/* Draft / Confirm button — all state derived from centralized gate */}
+      {(()=>{
+        const createGate=tradeActionGate('create_draft',o.ticker);
+        const confirmGate=tradeActionGate('confirm',o.ticker);
+        const willQueue=createGate.transform==='queue';
+        if(confirmed) return(
+          <div className="flex items-center gap-2 py-2 px-3 rounded-xl text-xs font-bold"
+            style={{background:'#0f1a0f',color:'#22c55e',border:'1px solid #22c55e44'}}>
+            ✅ Confirmed as {modeLabel} — position is now open
           </div>
-        </div>
-      ):(()=>{const ms=getMarketStatus(); return ms.isOpen?(
-        <button onClick={createDraft} disabled={creating}
-          className="w-full py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
-          style={{background:creating?'#14532d':'#22c55e',color:'#000',opacity:creating?0.7:1}}>
-          {creating?<><span className="inline-block w-3 h-3 rounded-full border-2 spin mr-2"style={{borderColor:'#000',borderTopColor:'transparent'}}/>Creating Draft…</>:'➕ Create Order Draft'}
-        </button>
-      ):(
-        <button onClick={createDraft} disabled={creating}
-          className="w-full py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
-          style={{background:creating?'#1e3a5f':'#3b82f6',color:'#fff',opacity:creating?0.7:1}}>
-          {creating?<><span className="inline-block w-3 h-3 rounded-full border-2 spin mr-2"style={{borderColor:'#fff',borderTopColor:'transparent'}}/>Queuing…</>:'🕐 Queue Order for Market Open'}
-        </button>
-      );})()}
+        );
+        if(drafted) return(
+          <div className="flex items-center gap-2 py-2 px-3 rounded-xl text-xs font-bold"
+            style={{background:willQueue?'#0c1425':'#0f1a0f',color:willQueue?'#60a5fa':'#22c55e',
+              border:`1px solid ${willQueue?'#3b82f644':'#22c55e44'}`}}>
+            {willQueue?'🕐 Queued for market open — will execute at live price at next open':'✅ Draft created — confirm or reject in Order Drafts above'}
+          </div>
+        );
+        if(existingDraft){
+          const cWillQueue=confirmGate.transform==='queue';
+          return(
+            <div className="flex gap-2">
+              <button onClick={confirmDraft} disabled={confirming}
+                className="flex-1 py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
+                style={{background:confirming?(cWillQueue?'#1e3a5f':'#14532d'):(cWillQueue?'#3b82f6':'#22c55e'),
+                  color:cWillQueue?'#fff':'#000',opacity:confirming?0.7:1}}>
+                {confirming?(cWillQueue?'Queuing…':'Confirming…'):(cWillQueue?'🕐 Queue for Market Open':`✅ Draft Exists — Confirm ${modeLabel}`)}
+              </button>
+              <div className="flex items-center px-3 rounded-2xl text-xs"
+                style={{background:'#1a1200',color:'#f59e0b',border:'1px solid #f59e0b33'}}>
+                ⏳ Pending
+              </div>
+            </div>
+          );
+        }
+        return(
+          <button onClick={createDraft} disabled={creating}
+            className="w-full py-3 rounded-2xl text-sm font-bold transition-all hover:opacity-90"
+            style={{background:creating?(willQueue?'#1e3a5f':'#14532d'):(willQueue?'#3b82f6':'#22c55e'),
+              color:willQueue?'#fff':'#000',opacity:creating?0.7:1}}>
+            {creating?<><span className="inline-block w-3 h-3 rounded-full border-2 spin mr-2"
+              style={{borderColor:willQueue?'#fff':'#000',borderTopColor:'transparent'}}/>{willQueue?'Queuing…':'Creating Draft…'}</>
+              :(willQueue?'🕐 Queue Order for Market Open':'➕ Create Order Draft')}
+          </button>
+        );
+      })()}
       {o.positionPct&&<div className="text-xs text-gray-600 text-center mt-1">Position: {o.positionPct}% of portfolio</div>}
     </div>
   );
