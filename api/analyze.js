@@ -986,7 +986,15 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
     let existingDraftTickers = new Set();
     if (NOTION_TOKEN) {
       try {
-        const draftData = JSON.stringify({filter:{and:[{property:'Status',select:{equals:'Draft'}},{property:'Simulation Mode',checkbox:{equals:true}}]},page_size:20});
+        const draftData = JSON.stringify({filter:{and:[
+          {property:'Simulation Mode',checkbox:{equals:true}},
+          {or:[
+            {property:'Status',select:{equals:'Draft'}},
+            {property:'Status',select:{equals:'Paper'}},
+            {property:'Status',select:{equals:'Queued'}},
+            {property:'Status',select:{equals:'Open'}},
+          ]}
+        ]},page_size:50});
         const draftResult = await new Promise(resolve=>{
           const req=https.request({hostname:'api.notion.com',path:`/v1/databases/${TRADE_DB}/query`,method:'POST',
             headers:{'Authorization':'Bearer '+NOTION_TOKEN,'Content-Type':'application/json','Notion-Version':'2022-06-28','Content-Length':Buffer.byteLength(draftData)}
@@ -1022,11 +1030,12 @@ RULES: BUY needs score≥${minScore}, WATCHLIST ${Math.max(0,minScore-15)}-${min
     analysis.draftsCreated = draftsCreated;
     analysis.draftsSkipped = draftsSkipped;
     analysis.priceAlerts = (analysis.opportunities || []).filter(o => o._priceAlert).map(o => ({ ticker: o.ticker, alert: o._priceAlert }));
-    // Strip held tickers from opportunities so the UI never shows "BUY" for something already owned
+    // Strip tickers with ANY active status (Open, Draft, Paper, Queued) from opportunities
     if (analysis.opportunities) {
       analysis.opportunities = analysis.opportunities.filter(o => {
         if (!o.ticker) return true;
-        return !openTickerSet.has(o.ticker.toUpperCase());
+        const tk = o.ticker.toUpperCase();
+        return !openTickerSet.has(tk) && !existingDraftTickers.has(tk) && !draftedThisRun.has(tk);
       });
     }
     return res.json(analysis);
@@ -2162,6 +2171,14 @@ Be constructive but unflinching. Every recommendation must be specific and imple
   analysis._sourceStatus = _sourceStatus;
   if (sourceErrors.length > 0) analysis._sourceErrors = sourceErrors;
 
+  // Strip tickers with ANY active status (Open, Draft, Paper, Queued) from opportunities
+  if (analysis.opportunities) {
+    analysis.opportunities = analysis.opportunities.filter(o => {
+      if (!o.ticker) return true;
+      const tk = o.ticker.toUpperCase();
+      return !openTickerSet.has(tk) && !existingDraftTickers.has(tk) && !draftedThisRun.has(tk);
+    });
+  }
   // Collect price alerts for opportunities that couldn't get live prices
   analysis.priceAlerts = (analysis.opportunities || [])
     .filter(o => o._priceAlert)

@@ -1185,6 +1185,7 @@ function BuyOpportunityCard({o,regime,onDraftCreated,existingDrafts=[]}){
         }
         setDrafted(true);onDraftCreated&&onDraftCreated();
       }
+      else if(d.duplicate){setDrafted(true);} // Already has active trade — show as handled
       else{alert('Failed to create draft: '+(d.error||'unknown error'));}
     }catch(e){alert('Error: '+e.message);}
     finally{setCreating(false);}
